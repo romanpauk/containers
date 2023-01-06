@@ -44,7 +44,9 @@ target_sources(containers INTERFACE
     include/containers/lockfree/stack.h
     include/containers/lockfree/counter.h
     include/containers/lockfree/detail/aligned.h
+    include/containers/lockfree/detail/atomic.h
     include/containers/lockfree/detail/hazard_era_allocator.h
+    include/containers/lockfree/detail/vbr_allocator.h
     README.md
 )
 
@@ -52,6 +54,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     add_executable(containers_benchmark
         benchmark/main.cpp
         # benchmark/lockfree/counter.cpp
+        benchmark/lockfree/atomic.cpp
         benchmark/lockfree/stack.cpp
         benchmark/lockfree/queue.cpp
     )
