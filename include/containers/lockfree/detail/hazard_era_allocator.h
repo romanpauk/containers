@@ -125,13 +125,6 @@ namespace containers
     
     using thread = thread_manager<>;
 
-    // - Thread ADT state - shared between all ADT<T>'s of concrete T
-    //      allocator<T, ThreadManager> allocator(threads);
-    //          thread-local data for T
-    //
-    //  - ADT state - state of concrete ADT
-    //      queue< T, Allocator > queue(allocator);
-
     template< typename T, typename ThreadManager = thread, typename Allocator = std::allocator< T > > class hazard_era_allocator
     {
         static const int freq = 1024;

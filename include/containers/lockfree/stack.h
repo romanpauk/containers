@@ -18,7 +18,7 @@
 namespace containers
 {
     // https://en.wikipedia.org/wiki/Treiber_stack
-    template< typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<> > class stack
+    template< typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<> > class unbounded_stack
     {
         struct stack_node
         {
@@ -32,11 +32,11 @@ namespace containers
         alignas(64) std::atomic< stack_node* > head_;
 
     public:
-        stack(Allocator& allocator = Allocator::instance())
+        unbounded_stack(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast< allocator_type* >(&allocator))
         {}
 
-        ~stack()
+        ~unbounded_stack()
         {
             clear();
         }
@@ -86,7 +86,76 @@ namespace containers
     };
 
     // Non-blocking Array-based Algorithms for Stack and Queues - https://link.springer.com/chapter/10.1007/978-3-540-92295-7_10
+    template< typename T, size_t Size, typename Backoff, uint32_t Mark = 0 > struct bounded_stack_base
+    {
+        struct node
+        {
+            alignas(8) T value;
+            alignas(8) uint32_t index;
+            uint32_t counter;
+        };
+
+        static_assert(sizeof(node) == 16);
+
+        alignas(64) atomic16< node > top_;
+        alignas(64) std::array< atomic16< node >, Size > array_ = {};
+    
+        using value_type = T;
+
+        bool push(T value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load(std::memory_order_relaxed);
+                if (Mark && top.index == Mark)
+                    return false;
+                finish(top);
+                if (top.index == array_.size() - 1)
+                    return false;
+                
+                auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
+                if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
+                    return true;
+                backoff();
+            }
+        }
+
+        bool pop(T& value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load(std::memory_order_relaxed);
+                if (Mark && top.index == Mark)
+                    return false;
+                if (top.index == 0)
+                    return false;
+
+                // The article has finish() before if(top.index == 0), yet that worsens
+                // pop() scalability in empty stack. As pop on empty stack has no effect,
+                // and push() still helps with finish, it is safe.
+                finish(top);
+
+                auto belowTop = array_[top.index - 1].load(std::memory_order_relaxed);
+                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
+                    return true;
+                backoff();
+            }
+        }
+
+    private:
+        void finish(node& n)
+        {
+            assert(Mark && n.index != Mark);
+            auto topValue = array_[n.index].load(std::memory_order_relaxed).value;
+            node expected = { topValue, n.index, n.counter - 1 };
+            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
+        }
+    };
+
     template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_stack
+        : private bounded_stack_base< T, Size, Backoff >
     {
         struct node
         {
@@ -101,51 +170,94 @@ namespace containers
         alignas(64) std::array< atomic16< node >, Size > array_ = {};
 
     public:
-        using value_type = T;
+        using value_type = typename bounded_stack_base< T, Size, Backoff >::value_type;
+        using bounded_stack_base< T, Size, Backoff >::push;
+        using bounded_stack_base< T, Size, Backoff >::pop;
+    };
 
-        bool push(T value)
+    template< typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<>, typename InnerStack = bounded_stack_base< T, 1024, Backoff, -1 > > class unbounded_blocked_stack
+    {
+        struct node
         {
-            Backoff backoff;
+            node* next;
+            InnerStack stack;
+        };
+
+        using allocator_type = typename Allocator::template rebind< node >::other;
+        allocator_type& allocator_;
+
+        alignas(64) std::atomic< node* > head_;
+
+    public:
+        unbounded_blocked_stack(Allocator& allocator = Allocator::instance())
+            : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
+        {
+            head_ = allocator_.allocate(nullptr);
+        }
+
+        ~unbounded_blocked_stack()
+        {
+            clear();
+        }
+
+        template< typename Ty > void push(Ty&& value)
+        {
+            auto guard = allocator_.guard();
             while (true)
             {
-                auto top = top_.load(std::memory_order_relaxed);
-                finish(top);
-                if(top.index == array_.size() - 1)
-                    return false;
-                auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
-                if(top_.compare_exchange_strong(top, node { value, top.index + 1, aboveTopCounter + 1}))
-                    return true;
-                backoff();
+                auto head = allocator_.protect(head_, std::memory_order_relaxed);
+                auto top = head->stack.top_.load(std::memory_order_relaxed);
+                if (head->stack.push(std::forward< Ty >(value)))
+                    return;
+
+                if (top.index == -1 && head_.compare_exchange_weak(head, head->next))
+                {
+                    allocator_.retire(head);
+                }
+                else
+                {
+                    head = allocator_.allocate(nullptr);
+                    if (!head_.compare_exchange_strong(head->next, head))
+                        allocator_.deallocate_unsafe(head);
+                }
             }
         }
 
         bool pop(T& value)
         {
             Backoff backoff;
+            auto guard = allocator_.guard();
             while (true)
             {
-                auto top = top_.load(std::memory_order_relaxed);
-                if (top.index == 0)
+                auto head = allocator_.protect(head_, std::memory_order_relaxed);
+                if (!head)
+                    return false;
+                
+                auto top = head->stack.top_.load(std::memory_order_relaxed);
+                if (head->stack.pop(value))
+                    return true;
+
+                if(!head->next)
                     return false;
 
-                // The article has finish() before if(top.index == 0), yet that worsens
-                // pop() scalability in empty stack. As pop on empty stack has no effect,
-                // and push() still helps with finish, it is safe.
-                finish(top); 
-
-                auto belowTop = array_[top.index - 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
-                    return true;
-                backoff();
+                if(top.index == -1 || head->stack.top_.compare_exchange_strong(top, {T{}, (uint32_t)-1, top.counter + 1}))
+                {
+                    if (head_.compare_exchange_weak(head, head->next))
+                        allocator_.retire(head);
+                }
             }
         }
 
     private:
-        void finish(node& n)
+        void clear()
         {
-            auto topValue = array_[n.index].load(std::memory_order_relaxed).value;
-            node expected = { topValue, n.index, n.counter - 1 };
-            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
+            auto head = head_.load();
+            while (head)
+            {
+                auto next = head->next;
+                allocator_.deallocate_unsafe(head);
+                head = next;
+            }
         }
     };
 

@@ -16,7 +16,6 @@
 
 static const auto max_threads = containers::thread::max_threads;
 
-// For now, until I have better allocation strategy, use std::list
 namespace stl
 {
     template< typename T > class stack
@@ -25,7 +24,7 @@ namespace stl
         void push(T value)
         {
             auto guard = std::lock_guard(mutex_);
-            stack_.push_back(value);
+            stack_.push(value);
         }
 
         bool pop(T& value)
@@ -33,8 +32,8 @@ namespace stl
             auto guard = std::lock_guard(mutex_);
             if (!stack_.empty())
             {
-                value = std::move(stack_.back());
-                stack_.pop_back();
+                value = std::move(stack_.top());
+                stack_.pop();
                 return true;
             }
             else
@@ -45,7 +44,7 @@ namespace stl
 
     private:
         std::mutex mutex_;
-        std::list< T > stack_;
+        std::stack< T > stack_;
     };
 }
 
@@ -74,9 +73,9 @@ static void stl_stack_pop(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
-static void hazard_era_stack(benchmark::State& state)
+static void unbounded_stack(benchmark::State& state)
 {
-    static containers::stack< int > stack;
+    static containers::unbounded_stack< int > stack;
 
     int value;
     for (auto _ : state)
@@ -88,9 +87,9 @@ static void hazard_era_stack(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
-static void hazard_era_stack_pop(benchmark::State& state)
+static void unbounded_stack_pop(benchmark::State& state)
 {
-    static containers::stack< int > stack;
+    static containers::unbounded_stack< int > stack;
     int value;
     for (auto _ : state)
     {
@@ -146,13 +145,43 @@ static void bounded_stack_pop(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
+static void unbounded_blocked_stack(benchmark::State& state)
+{
+    static containers::unbounded_blocked_stack< int > stack;
+
+    int value;
+    for (auto _ : state)
+    {
+        stack.push(1);
+        stack.pop(value);
+    }
+
+    state.SetBytesProcessed(state.iterations());
+}
+
+static void unbounded_blocked_stack_pop(benchmark::State& state)
+{
+    static containers::unbounded_blocked_stack< int > stack;
+
+    int value;
+    for (auto _ : state)
+    {
+        stack.pop(value);
+    }
+
+    state.SetBytesProcessed(state.iterations());
+}
+
 BENCHMARK(stl_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(stl_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK(hazard_era_stack)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK(hazard_era_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(unbounded_stack)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(unbounded_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 //BENCHMARK(hazard_era_stack_eb)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(bounded_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(bounded_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
+
+BENCHMARK(unbounded_blocked_stack)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(unbounded_blocked_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 
 template < typename T > struct function_thread_local
 {
