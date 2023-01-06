@@ -40,11 +40,12 @@ add_library(containers INTERFACE)
 target_include_directories(containers INTERFACE include)
 
 target_sources(containers INTERFACE
+    include/containers/lockfree/atomic16.h
     include/containers/lockfree/queue.h
     include/containers/lockfree/stack.h
     include/containers/lockfree/counter.h
     include/containers/lockfree/detail/aligned.h
-    include/containers/lockfree/detail/atomic.h
+    include/containers/lockfree/detail/atomic16_win32.h
     include/containers/lockfree/detail/hazard_era_allocator.h
     include/containers/lockfree/detail/vbr_allocator.h
     README.md

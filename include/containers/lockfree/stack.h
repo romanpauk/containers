@@ -9,7 +9,7 @@
 
 #include <containers/lockfree/detail/hazard_era_allocator.h>
 #include <containers/lockfree/detail/aligned.h>
-#include <containers/lockfree/detail/atomic.h>
+#include <containers/lockfree/atomic16.h>
 
 #include <atomic>
 #include <memory>
@@ -108,11 +108,11 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto top = top_.load();
+                auto top = top_.load(std::memory_order_relaxed);
                 finish(top);
                 if(top.index == array_.size() - 1)
                     return false;
-                auto aboveTopCounter = array_[top.index + 1].load().counter;
+                auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
                 if(top_.compare_exchange_strong(top, node { value, top.index + 1, aboveTopCounter + 1}))
                     return true;
                 backoff();
@@ -124,11 +124,16 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto top = top_.load();
-                finish(top);
-                if(top.index == 0)
+                auto top = top_.load(std::memory_order_relaxed);
+                if (top.index == 0)
                     return false;
-                auto belowTop = array_[top.index - 1].load();
+
+                // The article has finish() before if(top.index == 0), yet that worsens
+                // pop() scalability in empty stack. As pop on empty stack has no effect,
+                // and push() still helps with finish, it is safe.
+                finish(top); 
+
+                auto belowTop = array_[top.index - 1].load(std::memory_order_relaxed);
                 if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
                     return true;
                 backoff();
@@ -138,7 +143,7 @@ namespace containers
     private:
         void finish(node& n)
         {
-            auto topValue = array_[n.index].load().value;
+            auto topValue = array_[n.index].load(std::memory_order_relaxed).value;
             node expected = { topValue, n.index, n.counter - 1 };
             array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
         }
