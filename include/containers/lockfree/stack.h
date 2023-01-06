@@ -96,6 +96,7 @@ namespace containers
         };
 
         static_assert(sizeof(node) == 16);
+        static_assert(Size > 1);
 
         alignas(64) atomic16< node > top_;
         alignas(64) std::array< atomic16< node >, Size > array_ = {};
@@ -110,10 +111,13 @@ namespace containers
                 auto top = top_.load(std::memory_order_relaxed);
                 if (Mark && top.index == Mark)
                     return false;
-                finish(top);
                 if (top.index == array_.size() - 1)
                     return false;
-                
+
+                // See comment below, if the stack is full, we do not need to finish the top,
+                // as only operation that can be done is pop and that will finish it.
+                finish(top);
+
                 auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
                 if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
                     return true;
@@ -148,8 +152,8 @@ namespace containers
         void finish(node& n)
         {
             assert(Mark && n.index != Mark);
-            auto topValue = array_[n.index].load(std::memory_order_relaxed).value;
-            node expected = { topValue, n.index, n.counter - 1 };
+            auto top = array_[n.index].load(std::memory_order_relaxed);
+            node expected = { top.value, n.index, n.counter - 1 };
             array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
         }
     };
@@ -175,7 +179,19 @@ namespace containers
         using bounded_stack_base< T, Size, Backoff >::pop;
     };
 
-    template< typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<>, typename InnerStack = bounded_stack_base< T, 1024, Backoff, -1 > > class unbounded_blocked_stack
+    //
+    // This algorithm I don't remember reading anywhere, it is pretty simple,
+    // but not proven and amateurish attempt, so be warned.
+    //
+    // With N=128, we can run hazard_era_reclamation with every allocation/deallocation
+    // without performance impact.
+    //
+    template<
+        typename T,
+        typename Allocator = hazard_era_allocator< T >,
+        typename Backoff = exp_backoff<>,
+        typename InnerStack = bounded_stack_base< T, 128, Backoff, -1 >
+    > class unbounded_blocked_stack
     {
         struct node
         {
@@ -225,7 +241,6 @@ namespace containers
 
         bool pop(T& value)
         {
-            Backoff backoff;
             auto guard = allocator_.guard();
             while (true)
             {

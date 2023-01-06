@@ -127,7 +127,7 @@ namespace containers
 
     template< typename T, typename ThreadManager = thread, typename Allocator = std::allocator< T > > class hazard_era_allocator
     {
-        static const int freq = 1024;
+        static const int freq = 32;
         static_assert(is_power_of_2< freq >::value);
 
         struct hazard_buffer
