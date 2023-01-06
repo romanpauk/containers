@@ -119,11 +119,40 @@ static void hazard_era_stack_eb(benchmark::State& state)
 }
 */
 
+static void bounded_stack(benchmark::State& state)
+{
+    static containers::bounded_stack< int, 1024 > stack;
+
+    int value;
+    for (auto _ : state)
+    {
+        stack.push(1);
+        stack.pop(value);
+    }
+
+    state.SetBytesProcessed(state.iterations());
+}
+
+static void bounded_stack_pop(benchmark::State& state)
+{
+    static containers::bounded_stack< int, 1024 > stack;
+
+    int value;
+    for (auto _ : state)
+    {
+        stack.pop(value);
+    }
+
+    state.SetBytesProcessed(state.iterations());
+}
+
 BENCHMARK(stl_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(stl_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(hazard_era_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(hazard_era_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 //BENCHMARK(hazard_era_stack_eb)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(bounded_stack)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(bounded_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 
 template < typename T > struct function_thread_local
 {

@@ -35,6 +35,8 @@ namespace containers
             {
                 switch (mo)
                 {
+                case std::memory_order_relaxed:
+                    return;
                 case std::memory_order_acquire:
                 case std::memory_order_release:
                 case std::memory_order_seq_cst:

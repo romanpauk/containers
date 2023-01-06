@@ -9,6 +9,7 @@
 
 #include <containers/lockfree/detail/hazard_era_allocator.h>
 #include <containers/lockfree/detail/aligned.h>
+#include <containers/lockfree/detail/atomic.h>
 
 #include <atomic>
 #include <memory>
@@ -81,6 +82,65 @@ namespace containers
                 allocator_.deallocate_unsafe(head);
                 head = next;
             }
+        }
+    };
+
+    // Non-blocking Array-based Algorithms for Stack and Queues - https://link.springer.com/chapter/10.1007/978-3-540-92295-7_10
+    template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_stack
+    {
+        struct node
+        {
+            alignas(8) T value;
+            alignas(8) uint32_t index;
+            uint32_t counter;
+        };
+
+        static_assert(sizeof(node) == 16);
+
+        alignas(64) atomic16< node > top_;
+        alignas(64) std::array< atomic16< node >, Size > array_ = {};
+
+    public:
+        using value_type = T;
+
+        bool push(T value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load();
+                finish(top);
+                if(top.index == array_.size() - 1)
+                    return false;
+                auto aboveTopCounter = array_[top.index + 1].load().counter;
+                if(top_.compare_exchange_strong(top, node { value, top.index + 1, aboveTopCounter + 1}))
+                    return true;
+                backoff();
+            }
+        }
+
+        bool pop(T& value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load();
+                finish(top);
+                if(top.index == 0)
+                    return false;
+                auto belowTop = array_[top.index - 1].load();
+                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
+                    return true;
+                backoff();
+            }
+        }
+
+    private:
+        void finish(node& n)
+        {
+            auto topValue = array_[n.index].load().value;
+            node expected = { topValue, n.index, n.counter - 1 };
+            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
         }
     };
 
