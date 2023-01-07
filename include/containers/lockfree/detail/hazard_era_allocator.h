@@ -39,6 +39,8 @@ namespace containers
                 _mm_pause();
         }
 
+        size_t state() const { return state_; }
+
     private:
         size_t state_ = Initial;
     };
@@ -49,7 +51,7 @@ namespace containers
         ThreadManager* manager;
     };
 
-    template< size_t N = 128 > class thread_manager
+    template< size_t N = 1024 > class thread_manager
     {
         friend class thread_guard< thread_manager< N > >;
 
@@ -127,7 +129,7 @@ namespace containers
 
     template< typename T, typename ThreadManager = thread, typename Allocator = std::allocator< T > > class hazard_era_allocator
     {
-        static const int freq = 32;
+        static const int freq = 1024;
         static_assert(is_power_of_2< freq >::value);
 
         struct hazard_buffer

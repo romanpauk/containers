@@ -98,8 +98,8 @@ namespace containers
         static_assert(sizeof(node) == 16);
         static_assert(Size > 1);
 
-        alignas(64) atomic16< node > top_;
-        alignas(64) std::array< atomic16< node >, Size > array_ = {};
+        alignas(64) atomic16< node > top_{};
+        alignas(64) std::array< atomic16< node >, Size + 1 > array_{};
     
         using value_type = T;
 
@@ -148,6 +148,181 @@ namespace containers
             }
         }
 
+        constexpr size_t capacity() const { return Size; }
+
+    private:
+        void finish(node& n)
+        {
+            assert(!Mark || n.index != Mark);
+            auto top = array_[n.index].load(std::memory_order_relaxed);
+            node expected = { top.value, n.index, n.counter - 1 };
+            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
+        }
+    };
+
+    template< typename T, size_t Size > struct elimination_stack
+    {
+        struct operation
+        {
+            enum
+            {
+                none = 0,
+                push,
+                pop,
+                done,
+            };
+
+            alignas(8) T value;
+            uint32_t type;
+            uint32_t index;
+        };
+
+        alignas(64) std::array< aligned< atomic16< operation > >, Size > eliminations_{};
+
+        bool push(T& value, size_t spin)
+        {
+            operation op { value, operation::push, 0 };
+            return eliminate(op, spin);
+        }
+
+        bool pop(T& value, size_t spin)
+        {
+            operation op { T{}, operation::pop, 0 };
+            if (eliminate(op, spin))
+            {
+                value = std::move(op.value);
+                return true;
+            }
+
+            return false;
+        }
+
+        bool eliminate(operation& op, size_t spin)
+        {
+            auto index = thread::instance().id() & (eliminations_.size() - 1);
+            auto eli = eliminations_[index].load(std::memory_order_relaxed);
+            if (eli.type == operation::none)
+            {
+                if (eliminations_[index].compare_exchange_strong(eli, op))
+                {
+                    while (spin--) _mm_pause();
+                    if (!eliminations_[index].compare_exchange_strong(op, operation{ T{}, operation::none, 0 }))
+                    {
+                        clear(index);
+                        return true;
+                    }
+                }
+            }
+            else if (eli.type != operation::done && eli.type != op.type)
+            {
+                return eliminate(op, eli, index);
+            }
+
+            return false;
+        }
+
+        bool eliminate(operation& op, operation& eli, uint32_t index)
+        {
+            switch (op.type)
+            {
+            case operation::pop:
+                if (eliminations_[index].compare_exchange_strong(eli, operation{ T{}, operation::none, 0 }))
+                {
+                    op.value = std::move(eli.value);
+                    return true;
+                }
+                break;
+            case operation::push:
+                if (eliminations_[index].compare_exchange_strong(eli, operation{ op.value, operation::none, 0 }))
+                    return true;
+                break;
+            default:
+                assert(false);
+            }
+
+            return false;
+        }
+
+        void clear(uint32_t index)
+        {
+            eliminations_[index].store({ T{}, operation::none, 0 }, std::memory_order_relaxed);
+        }
+    };
+
+    template< typename T, size_t Size, typename Backoff, uint32_t Mark = 0 > struct bounded_stack_base_eb
+    {
+        struct node
+        {
+            alignas(8) T value;
+            uint32_t index;
+            uint32_t counter;
+        };
+
+        static_assert(sizeof(node) == 16);
+        static_assert(Size > 1);
+
+        alignas(64) atomic16< node > top_{};
+        alignas(64) std::array< atomic16< node >, Size + 1 > array_{};
+
+        using value_type = T;
+
+        elimination_stack< T, 128 > elimination_stack_;
+
+        bool push(T value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load(std::memory_order_relaxed);
+                if (Mark && top.index == Mark)
+                    return false;
+                if (top.index == array_.size() - 1)
+                    return false;
+
+                // See comment below, if the stack is full, we do not need to finish the top,
+                // as only operation that can be done is pop and that will finish it.
+                finish(top);
+
+                auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
+                if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
+                    return true;
+
+               if(elimination_stack_.push(value, backoff.state()))
+                   return true;
+
+                backoff();
+            }
+        }
+       
+        bool pop(T& value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto top = top_.load(std::memory_order_relaxed);
+                if (Mark && top.index == Mark)
+                    return false;
+                if (top.index == 0)
+                    return false;
+              
+                // The article has finish() before if(top.index == 0), yet that worsens
+                // pop() scalability in empty stack. As pop on empty stack has no effect,
+                // and push() still helps with finish, it is safe.
+                finish(top);
+
+                auto belowTop = array_[top.index - 1].load(std::memory_order_relaxed);
+                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
+                    return true;
+
+                if(elimination_stack_.pop(value, backoff.state()))
+                    return true;
+
+                backoff();
+            }
+        }
+
+        constexpr size_t capacity() const { return Size; }        
+
     private:
         void finish(node& n)
         {
@@ -161,22 +336,11 @@ namespace containers
     template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_stack
         : private bounded_stack_base< T, Size, Backoff >
     {
-        struct node
-        {
-            alignas(8) T value;
-            alignas(8) uint32_t index;
-            uint32_t counter;
-        };
-
-        static_assert(sizeof(node) == 16);
-
-        alignas(64) atomic16< node > top_;
-        alignas(64) std::array< atomic16< node >, Size > array_ = {};
-
     public:
         using value_type = typename bounded_stack_base< T, Size, Backoff >::value_type;
         using bounded_stack_base< T, Size, Backoff >::push;
         using bounded_stack_base< T, Size, Backoff >::pop;
+        using bounded_stack_base< T, Size, Backoff >::capacity;
     };
 
     //
@@ -190,19 +354,19 @@ namespace containers
         typename T,
         typename Allocator = hazard_era_allocator< T >,
         typename Backoff = exp_backoff<>,
-        typename InnerStack = bounded_stack_base< T, 128, Backoff, -1 >
+        typename InnerStack = bounded_stack_base_eb< T, 128, Backoff, -1 >
     > class unbounded_blocked_stack
     {
         struct node
         {
-            node* next;
+            node* next{};
             InnerStack stack;
         };
 
         using allocator_type = typename Allocator::template rebind< node >::other;
         allocator_type& allocator_;
-
-        alignas(64) std::atomic< node* > head_;
+        
+        alignas(64) std::atomic< node* > head_{};
 
     public:
         unbounded_blocked_stack(Allocator& allocator = Allocator::instance())

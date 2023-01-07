@@ -15,6 +15,7 @@
 #include <list>
 
 static const auto max_threads = containers::thread::max_threads;
+static const auto iterations = 1024;
 
 namespace stl
 {
@@ -58,7 +59,7 @@ static void stl_stack(benchmark::State& state)
         stack.pop(value);
     }
 
-    state.SetBytesProcessed(state.iterations());
+    state.SetBytesProcessed(state.iterations() * 2);
 }
 
 static void stl_stack_pop(benchmark::State& state)
@@ -84,7 +85,7 @@ static void unbounded_stack(benchmark::State& state)
         stack.pop(value);
     }
 
-    state.SetBytesProcessed(state.iterations());
+    state.SetBytesProcessed(state.iterations() * 2);
 }
 
 static void unbounded_stack_pop(benchmark::State& state)
@@ -129,7 +130,19 @@ static void bounded_stack(benchmark::State& state)
         stack.pop(value);
     }
 
-    state.SetBytesProcessed(state.iterations());
+    state.SetBytesProcessed(state.iterations() * 2);
+}
+
+static void bounded_stack_push(benchmark::State& state)
+{
+    for (auto _ : state)
+    {
+        containers::bounded_stack< int, 1024 > stack;
+        for (size_t i = 0; i < stack.capacity(); ++i) {
+            stack.push(1);
+        }
+    }
+    state.SetBytesProcessed(state.iterations() * 1024);
 }
 
 static void bounded_stack_pop(benchmark::State& state)
@@ -156,7 +169,7 @@ static void unbounded_blocked_stack(benchmark::State& state)
         stack.pop(value);
     }
 
-    state.SetBytesProcessed(state.iterations());
+    state.SetBytesProcessed(state.iterations() * 2);
 }
 
 static void unbounded_blocked_stack_pop(benchmark::State& state)
@@ -172,16 +185,32 @@ static void unbounded_blocked_stack_pop(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
+static void elimination_stack(benchmark::State& state)
+{
+    static containers::elimination_stack< int, 8 > stack;
+    int value{};
+    for (auto _ : state)
+    {
+        stack.push(value, 64);
+        stack.pop(value, 64);
+    }
+
+    state.SetItemsProcessed(state.iterations() * 2);
+}
+
 BENCHMARK(stl_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(stl_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(unbounded_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(unbounded_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 //BENCHMARK(hazard_era_stack_eb)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(bounded_stack)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK(bounded_stack_push)->Iterations(iterations)->UseRealTime();
 BENCHMARK(bounded_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK(unbounded_blocked_stack)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK(unbounded_blocked_stack_pop)->ThreadRange(1, max_threads)->UseRealTime();
+
+BENCHMARK(elimination_stack)->ThreadRange(1, max_threads)->UseRealTime();
 
 template < typename T > struct function_thread_local
 {
