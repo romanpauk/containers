@@ -46,11 +46,11 @@ private:
 template< typename Queue > static void queue_push_pop(benchmark::State& state)
 {
     static Queue queue;
-    int value;
+    int value = 0, result = 0;
     for (auto _ : state)
     {
-        queue.push(1);
-        queue.pop(value);
+        queue.push(value++);
+        queue.pop(result);
     }
 
     state.SetBytesProcessed(state.iterations() * 2);
@@ -77,5 +77,5 @@ BENCHMARK_TEMPLATE(queue_pop,containers::unbounded_queue<int>)->ThreadRange(1, m
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int, 1024, 64>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int, 1024, 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,8192,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,8192,1024>)->ThreadRange(1, max_threads)->UseRealTime();

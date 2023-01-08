@@ -214,17 +214,17 @@ namespace containers
         {
             Cursor() = default;
 
-            Cursor(uint32_t offset, uint32_t version)
-                : offset(offset)
-                , version(version)
+            Cursor(uint32_t off, uint32_t ver)
+                : version(ver)
+                , offset(off)
             {}
 
             Cursor(uint64_t value)
-                : offset(value >> 32)
-                , version((uint32_t)value)
+                : version(value >> 32)
+                , offset(value)
             {}
 
-            operator uint64_t() { return (uint64_t)offset << 32 | version; }
+            operator uint64_t() { return (uint64_t)version << 32 | offset; }
 
             uint32_t offset;
             uint32_t version;
@@ -248,25 +248,26 @@ namespace containers
 
         static_assert(is_power_of_2< Size >::value);
         static_assert(is_power_of_2< BlockSize >::value);
+        static_assert(Size / BlockSize > 1);
 
-        alignas(64) Block blocks_[Size / BlockSize];
-        alignas(64) std::atomic< uint64_t > phead_;
-        alignas(64) std::atomic< uint64_t > chead_;
-
+        alignas(64) std::array< Block, Size / BlockSize > blocks_;
+        alignas(64) std::atomic< uint64_t > phead_{};
+        alignas(64) std::atomic< uint64_t > chead_{};
+      
         std::pair< Cursor, Block* > get_block(std::atomic< uint64_t >& head)
         {
             auto value = Cursor(head.load());
-            return { value, &blocks_[value.offset] };
+            return { value, &blocks_[value.offset & (blocks_.size() - 1)]};
         }
         
         std::pair< allocate_status, Entry > allocate_entry(Block* block)
         {
             if (Cursor(block->allocated.load()).offset >= BlockSize)
-                return {allocate_status::block_done, {} };
-            auto offset = Cursor(block->allocated.fetch_add(1)).offset;
-            if (offset >= BlockSize)
                 return { allocate_status::block_done, {} };
-            return { allocate_status::success, Entry { block, offset } };
+            auto allocated = Cursor(block->allocated.fetch_add(1));
+            if (allocated.offset >= BlockSize)
+                return { allocate_status::block_done, {} };
+            return { allocate_status::success, { block, allocated.offset, 0 } };
         }
 
         template< typename Ty > void commit_entry(Entry entry, Ty&& data)
@@ -275,7 +276,7 @@ namespace containers
             entry.block->committed.fetch_add(1);
         }
 
-        std::pair< reserve_status, Entry > reserve_entry(Block* block)
+        std::pair< reserve_status, Entry > reserve_entry(Block* block, Backoff& backoff)
         {
             while (true)
             {
@@ -293,10 +294,13 @@ namespace containers
                             return { reserve_status::not_available, {} };
                     }
 
-                    if (atomic_fetch_and_max(block->reserved, (uint64_t)Cursor(reserved.offset + 1, reserved.version + 1)) == (uint64_t)reserved)
-                        return { reserve_status::success, Entry { block, reserved.offset, reserved.version } };
+                    if (atomic_fetch_and_max(block->reserved, (uint64_t)Cursor(reserved.offset + 1, reserved.version)) == (uint64_t)reserved)
+                        return { reserve_status::success, { block, reserved.offset, reserved.version } };
                     else
+                    {
+                        backoff();
                         continue;
+                    }
                 }
 
                 return { reserve_status::block_done, {} };
@@ -307,6 +311,7 @@ namespace containers
         {
             std::optional< T > data = entry.block->entries[entry.offset];
             entry.block->consumed.fetch_add(1);
+            // Drop-old mode:
             //auto allocated = entry.block->allocated.load();
             //if(allocated.version != entry.version) data.reset();
             return data;
@@ -314,7 +319,7 @@ namespace containers
 
         advance_status advance_phead(Cursor head)
         {
-            auto& next_block = blocks_[(head.offset + 1) & (Size / BlockSize - 1)];
+            auto& next_block = blocks_[(head.offset + 1) & (blocks_.size() - 1)];
             auto consumed = Cursor(next_block.consumed.load());
             if (consumed.version < head.version ||
                 (consumed.version == head.version && consumed.offset != BlockSize))
@@ -325,30 +330,39 @@ namespace containers
                 else
                     return advance_status::not_available;
             }
-            auto committed = Cursor(next_block.committed.load());
-            auto allocated = Cursor(next_block.allocated.load());
+            // Drop-old mode:
+            //auto committed = Cursor(next_block.committed.load());
             //if (commited.version == head.version && commited.index != BlockSize)
             //    return advance_status::not_available;
-            atomic_fetch_and_max(next_block.committed, (uint64_t)Cursor(committed.offset, head.version + 1));
-            atomic_fetch_and_max(next_block.allocated, (uint64_t)Cursor(allocated.offset, head.version + 1));
-            atomic_fetch_and_max(phead_, head + 1);
+            atomic_fetch_and_max(next_block.committed, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_and_max(next_block.allocated, (uint64_t)Cursor(0, head.version + 1));
+
+            // TODO: how does the article handle wrap-around?
+            if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
+                ++head.version;
+
+            atomic_fetch_and_max(phead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return advance_status::success;
         }
 
         bool advance_chead(Cursor head, uint32_t version)
         {
-            auto& next_block = blocks_[(head.offset + 1) & (Size / BlockSize - 1)];
+            auto& next_block = blocks_[(head.offset + 1) & (blocks_.size() - 1)];
             auto committed = Cursor(next_block.committed.load());
             if (committed.version != head.version + 1)
                 return false;
-
-            auto reserved = Cursor(next_block.reserved.load());
-            atomic_fetch_and_max(next_block.committed, (uint64_t)Cursor(committed.offset, head.version + 1));
-            atomic_fetch_and_max(next_block.reserved, (uint64_t)Cursor(reserved.offset, head.version + 1));
+            atomic_fetch_and_max(next_block.consumed, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_and_max(next_block.reserved, (uint64_t)Cursor(0, head.version + 1));
+            // Drop-old mode:
             //if (committed.version < version + (head.index == 0))
             //    return false;
-            //atomic_fetch_and_max(next_block.reserved, { reserved.offset, committed.version });
-            atomic_fetch_and_max(chead_, (uint64_t)Cursor(head.offset + 1, head.version + 1));
+            //atomic_fetch_and_max(next_block.reserved, { 0, committed.version });
+
+            // TODO: how does the article handle wrap-around?
+            if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
+                ++head.version;
+
+            atomic_fetch_and_max(chead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return true;
         }
 
@@ -361,8 +375,26 @@ namespace containers
         }
 
     public:
+        bounded_queue_bbq()
+        {
+            blocks_[0].allocated.store(0);
+            blocks_[0].committed.store(0);
+            blocks_[0].reserved.store(0);
+            blocks_[0].consumed.store(0);
+
+            for (size_t i = 1; i < blocks_.size(); ++i)
+            {
+                auto& block = blocks_[i];
+                block.allocated.store(BlockSize);
+                block.committed.store(BlockSize);
+                block.reserved.store(BlockSize);
+                block.consumed.store(BlockSize);
+            }
+        }
+
         template< typename Ty > bool push(Ty&& value)
         {
+            Backoff backoff;
             while (true)
             {
                 auto [head, block] = get_block(phead_);
@@ -377,21 +409,24 @@ namespace containers
                     {
                     case advance_status::success: continue;
                     case advance_status::no_entry: return false; // FULL
-                    case advance_status::not_available: return false; // BUSY
+                    case advance_status::not_available: break; // BUSY
                     default: assert(false);
                     }
                 default:
                     assert(false);
                 }
+
+                backoff();
             }
         }
 
         bool pop(T& value)
         {
+            Backoff backoff;
             while (true)
             {
                 auto [head, block] = get_block(chead_);
-                auto [status, entry] = reserve_entry(block);
+                auto [status, entry] = reserve_entry(block, backoff);
                 switch (status)
                 {
                 case reserve_status::success: {
@@ -401,21 +436,19 @@ namespace containers
                         value = std::move(*opt);
                         return true;
                     }
-
-                    continue;
+                    break;
                 }
-                case reserve_status::no_entry:
-                    return false; // EMPTY
-                case reserve_status::not_available:
-                    return false; // BUSY
+                case reserve_status::no_entry: return false; // EMPTY
+                case reserve_status::not_available: break; // BUSY
                 case reserve_status::block_done:
-                    if(advance_chead(head, entry.version))
-                        continue;
-                    else
-                        return false; // EMPTY
+                    if (!advance_chead(head, entry.version))
+                        return false;
+                    continue;
                 default:
                     assert(false);
                 }
+
+                backoff();
             }
         }
     };
