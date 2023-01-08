@@ -31,15 +31,17 @@ namespace containers
 
         void operator() ()
         {
-            size_t iters = state_;
-            if((state_ <<= 1) >= Max)
-                state_ = Max;
-
+            size_t iters = spin();
             while (iters--)
                 _mm_pause();
         }
 
-        size_t state() const { return state_; }
+        size_t spin()
+        {
+            if ((state_ <<= 1) >= Max)
+                state_ = Max;
+            return state_;
+        }
 
     private:
         size_t state_ = Initial;

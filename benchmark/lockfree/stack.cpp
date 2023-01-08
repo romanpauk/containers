@@ -187,15 +187,20 @@ static void unbounded_blocked_stack_pop(benchmark::State& state)
 
 static void elimination_stack(benchmark::State& state)
 {
-    static containers::elimination_stack< int, 8 > stack;
-    int value{};
+    // Size 8 and spin 32 are great numbers. Why?
+
+    static containers::elimination_stack< int, containers::thread::max_threads / 2 > stack;
+    int elims = 0;
+    int value = 0;
     for (auto _ : state)
     {
-        stack.push(value, 64);
-        stack.pop(value, 64);
+        if(value++ & 1)
+            elims += stack.push(value, 32);
+        else
+            elims += stack.pop(value, 32);
     }
 
-    state.SetItemsProcessed(state.iterations() * 2);
+    state.SetItemsProcessed(elims);
 }
 
 BENCHMARK(stl_stack)->ThreadRange(1, max_threads)->UseRealTime();

@@ -169,7 +169,6 @@ namespace containers
                 none = 0,
                 push,
                 pop,
-                done,
             };
 
             alignas(8) T value;
@@ -178,6 +177,11 @@ namespace containers
         };
 
         alignas(64) std::array< aligned< atomic16< operation > >, Size > eliminations_{};
+        std::array< int, thread::max_threads > width_{};
+        std::array< int, thread::max_threads > hit_{};
+        std::array< int, thread::max_threads > spin_{};
+
+        const int threshold = 256;
 
         bool push(T& value, size_t spin)
         {
@@ -199,23 +203,37 @@ namespace containers
 
         bool eliminate(operation& op, size_t spin)
         {
-            auto index = thread::instance().id() & (eliminations_.size() - 1);
+            auto width = std::max(1, width_[thread::instance().id()]);
+            auto index = thread::instance().id() & (width - 1);
+            index += Size / 2 - width / 2;
+            //auto index = thread::instance().id() & (Size - 1);
+
             auto eli = eliminations_[index].load(std::memory_order_relaxed);
             if (eli.type == operation::none)
             {
+                if(!spin)
+                    return false;
+                
                 if (eliminations_[index].compare_exchange_strong(eli, op))
                 {
-                    while (spin--) _mm_pause();
+                    auto wait = spin; //spin_[thread::instance().id()];
+                    while(wait--) _mm_pause();
+
                     if (!eliminations_[index].compare_exchange_strong(op, operation{ T{}, operation::none, 0 }))
                     {
                         clear(index);
+                        if(spin) update(true, spin);
                         return true;
                     }
+
+                    if(spin) update(false, spin);
                 }
             }
-            else if (eli.type != operation::done && eli.type != op.type)
+            else if (eli.type != op.type)
             {
-                return eliminate(op, eli, index);
+                bool result = eliminate(op, eli, index);
+                if(spin) update(result, spin);
+                return result;
             }
 
             return false;
@@ -247,6 +265,29 @@ namespace containers
         {
             eliminations_[index].store({ T{}, operation::none, 0 }, std::memory_order_relaxed);
         }
+
+        void update(bool result, size_t spin)
+        {
+            auto tid = thread::instance().id();
+            if(result)
+            {
+                if(hit_[tid]++ > threshold)
+                {
+                    spin_[tid] = std::max(1, spin_[tid] / 2);
+                    width_[tid] = std::max(1, width_[tid] / 2);
+                    hit_[tid] = 0;
+                }
+            }
+            else
+            {
+                if (hit_[tid]-- < -threshold)
+                {
+                    spin_[tid] = std::max(1, (spin_[tid] * 2) & 65535);
+                    width_[tid] = std::max((int)1, (int)((width_[tid] * 2) & (Size - 1)));
+                    hit_[tid] = 0;
+                }
+            }
+        }
     };
 
     template< typename T, size_t Size, typename Backoff, uint32_t Mark = 0 > struct bounded_stack_base_eb
@@ -266,7 +307,7 @@ namespace containers
 
         using value_type = T;
 
-        elimination_stack< T, 128 > elimination_stack_;
+        elimination_stack< T, thread::max_threads / 2 > elimination_stack_;
 
         bool push(T value)
         {
@@ -278,7 +319,7 @@ namespace containers
                     return false;
                 if (top.index == array_.size() - 1)
                     return false;
-
+                
                 // See comment below, if the stack is full, we do not need to finish the top,
                 // as only operation that can be done is pop and that will finish it.
                 finish(top);
@@ -287,10 +328,10 @@ namespace containers
                 if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
                     return true;
 
-               if(elimination_stack_.push(value, backoff.state()))
+               if(elimination_stack_.push(value, 32))
                    return true;
 
-                backoff();
+               backoff();
             }
         }
        
@@ -304,7 +345,7 @@ namespace containers
                     return false;
                 if (top.index == 0)
                     return false;
-              
+                
                 // The article has finish() before if(top.index == 0), yet that worsens
                 // pop() scalability in empty stack. As pop on empty stack has no effect,
                 // and push() still helps with finish, it is safe.
@@ -314,7 +355,7 @@ namespace containers
                 if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
                     return true;
 
-                if(elimination_stack_.pop(value, backoff.state()))
+                if(elimination_stack_.pop(value, 32))
                     return true;
 
                 backoff();
