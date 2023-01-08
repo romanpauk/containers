@@ -16,7 +16,7 @@ namespace containers
 {
     // Simple, fast, and practical non-blocking and blocking concurrent queue algorithms.
     // http://www.cs.rochester.edu/~scott/papers/1996_PODC_queues.pdf
-    template < typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<> > class queue
+    template < typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<> > class unbounded_queue
     {
         struct queue_node
         {
@@ -31,7 +31,7 @@ namespace containers
         alignas(64) std::atomic< queue_node* > tail_;
 
     public:
-        queue(Allocator& allocator = Allocator::instance())
+        unbounded_queue(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {
             auto n = allocator_.allocate();
@@ -40,7 +40,7 @@ namespace containers
             tail_.store(n, std::memory_order_relaxed);
         }
 
-        ~queue()
+        ~unbounded_queue()
         {
             clear();
         }
@@ -120,4 +120,7 @@ namespace containers
             }
         }
     };
+
+    // A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue - https://arxiv.org/abs/1908.04511
+    // BBQ: A Block-based Bounded Queue - https://www.usenix.org/conference/atc22/presentation/wang-jiawei
 }

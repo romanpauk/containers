@@ -148,7 +148,7 @@ namespace containers
             }
         }
 
-        constexpr size_t capacity() const { return Size; }
+        static constexpr size_t capacity() { return Size; }
 
     private:
         void finish(node& n)
@@ -403,7 +403,7 @@ namespace containers
         typename T,
         typename Allocator = hazard_era_allocator< T >,
         typename Backoff = exp_backoff<>,
-        typename InnerStack = bounded_stack_base_eb< T, 128, Backoff, -1 >
+        typename InnerStack = bounded_stack_base< T, 128, Backoff, -1 >
     > class unbounded_blocked_stack
     {
         struct node
