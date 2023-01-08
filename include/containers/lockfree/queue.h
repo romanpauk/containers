@@ -121,6 +121,67 @@ namespace containers
         }
     };
 
+    template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_queue
+    {
+        alignas(64) std::atomic< size_t > chead_;
+        std::atomic< size_t > ctail_;
+
+        alignas(64) std::atomic< size_t > phead_;
+        std::atomic< size_t > ptail_;
+
+        static_assert(is_power_of_2<Size>::value);
+        alignas(64) std::array< T, Size > values_;
+
+    public:
+        template< typename Ty > bool push(Ty&& value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto ph = phead_.load(std::memory_order_acquire);
+                auto pn = ph + 1;
+                if (pn > ctail_.load(std::memory_order_acquire) + Size)
+                    return false;
+                if (!phead_.compare_exchange_strong(ph, pn))
+                {
+                    backoff();
+                }
+                else
+                {
+                    values_[pn & (Size - 1)] = std::forward< Ty >(value);
+                    while (ptail_.load(std::memory_order_acquire) != ph)
+                        _mm_pause();
+                    ptail_.store(pn, std::memory_order_release);
+                    return true;
+                }
+            }
+        }
+
+        bool pop(T& value)
+        {
+            Backoff backoff;
+            while (true)
+            {
+                auto ch = chead_.load(std::memory_order_acquire);
+                auto cn = ch + 1;
+                if (cn > ptail_.load(std::memory_order_acquire) + 1)
+                    return false;
+                if (!chead_.compare_exchange_strong(ch, cn))
+                {
+                    backoff();
+                }
+                else
+                {
+                    value = std::move(values_[cn & (Size - 1)]);
+                    while (ctail_.load(std::memory_order_acquire) != ch)
+                        _mm_pause();
+                    ctail_.store(cn, std::memory_order_release);
+                    return true;
+                }
+            }
+        }
+    };
+
     // A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue - https://arxiv.org/abs/1908.04511
     // BBQ: A Block-based Bounded Queue - https://www.usenix.org/conference/atc22/presentation/wang-jiawei
 }

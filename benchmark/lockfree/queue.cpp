@@ -70,5 +70,9 @@ template< typename Queue > static void queue_pop(benchmark::State& state)
 
 BENCHMARK_TEMPLATE(queue_push_pop,stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop,stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+
 BENCHMARK_TEMPLATE(queue_push_pop,containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop,containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
