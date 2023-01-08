@@ -236,7 +236,7 @@ namespace containers
             alignas(64) std::atomic< uint64_t > committed;
             alignas(64) std::atomic< uint64_t > reserved;
             alignas(64) std::atomic< uint64_t > consumed;
-            alignas(64) T entries[BlockSize];
+            alignas(64) std::array< T, BlockSize > entries;
         };
 
         struct Entry
@@ -361,7 +361,7 @@ namespace containers
             // TODO: how does the article handle wrap-around?
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
-
+                
             atomic_fetch_and_max(chead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return true;
         }
@@ -369,12 +369,14 @@ namespace containers
         template< typename U > U atomic_fetch_and_max(std::atomic< U >& result, U value)
         {
             auto r = result.load(std::memory_order_relaxed);
-            while (r < value && !result.compare_exchange_weak(r, value))
+            while (r < value && !result.compare_exchange_strong(r, value))
                 _mm_pause();
             return r;
         }
 
     public:
+        using value_type = T;
+
         bounded_queue_bbq()
         {
             blocks_[0].allocated.store(0);

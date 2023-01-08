@@ -17,6 +17,8 @@ static const auto max_threads = containers::thread::max_threads;
 template< typename T > class stl_queue
 {
 public:
+    using value_type = T;
+
     void push(T value)
     {
         auto guard = std::lock_guard(mutex_);
@@ -46,10 +48,10 @@ private:
 template< typename Queue > static void queue_push_pop(benchmark::State& state)
 {
     static Queue queue;
-    int value = 0, result = 0;
+    typename Queue::value_type value{}, result{};
     for (auto _ : state)
     {
-        queue.push(value++);
+        queue.push(value);
         queue.pop(result);
     }
 
@@ -79,3 +81,4 @@ BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue<int,1024>)->ThreadRange(
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,8192,1024>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,8192,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string, 8192, 1024>)->ThreadRange(1, max_threads)->UseRealTime();
