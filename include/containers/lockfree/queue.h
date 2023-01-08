@@ -32,6 +32,8 @@ namespace containers
         alignas(64) std::atomic< queue_node* > tail_;
 
     public:
+        using value_type = T;
+
         unbounded_queue(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {
@@ -135,6 +137,8 @@ namespace containers
         alignas(64) std::array< T, Size > values_;
 
     public:
+        using value_type = T;
+
         template< typename Ty > bool push(Ty&& value)
         {
             Backoff backoff;
