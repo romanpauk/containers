@@ -43,6 +43,8 @@ namespace containers
             return state_;
         }
 
+        size_t state() const { return state_; }
+
     private:
         size_t state_ = Initial;
     };

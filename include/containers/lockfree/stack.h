@@ -177,10 +177,16 @@ namespace containers
         };
 
         alignas(64) std::array< aligned< atomic16< operation > >, Size > eliminations_{};
-        std::array< int, thread::max_threads > width_{};
-        std::array< int, thread::max_threads > hit_{};
-        std::array< int, thread::max_threads > spin_{};
 
+        struct thread_data
+        {
+            int hit;
+            int spin;
+            int width;
+        };
+
+        std::array< aligned< thread_data >, thread::max_threads > data_{};
+        
         const int threshold = 256;
 
         bool push(T& value, size_t spin)
@@ -203,7 +209,7 @@ namespace containers
 
         bool eliminate(operation& op, size_t spin)
         {
-            auto width = std::max(1, width_[thread::instance().id()]);
+            auto width = std::max(1, data_[thread::instance().id()].width);
             auto index = thread::instance().id() & (width - 1);
             index += Size / 2 - width / 2;
             //auto index = thread::instance().id() & (Size - 1);
@@ -268,23 +274,23 @@ namespace containers
 
         void update(bool result, size_t spin)
         {
-            auto tid = thread::instance().id();
+            auto& data = data_[thread::instance().id()];
             if(result)
             {
-                if(hit_[tid]++ > threshold)
+                if(data.hit++ > threshold)
                 {
-                    spin_[tid] = std::max(1, spin_[tid] / 2);
-                    width_[tid] = std::max(1, width_[tid] / 2);
-                    hit_[tid] = 0;
+                    data.spin = std::max(1, data.spin / 2);
+                    data.width = std::max(1, data.width / 2);
+                    data.hit = 0;
                 }
             }
             else
             {
-                if (hit_[tid]-- < -threshold)
+                if (data.hit-- < -threshold)
                 {
-                    spin_[tid] = std::max(1, (spin_[tid] * 2) & 65535);
-                    width_[tid] = std::max((int)1, (int)((width_[tid] * 2) & (Size - 1)));
-                    hit_[tid] = 0;
+                    data.spin = std::max(1, (data.spin * 2) & 1023);
+                    data.width = std::max((int)1, (int)((data.width * 2) & (Size - 1)));
+                    data.hit = 0;
                 }
             }
         }
@@ -328,10 +334,12 @@ namespace containers
                 if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
                     return true;
 
-               if(elimination_stack_.push(value, 32))
+                // TODO: something is wrong, the elimination helps only for large contention - 256 512 threads
+                // and does not react to spin.
+                if (elimination_stack_.push(value, 0))
                    return true;
 
-               backoff();
+                backoff();
             }
         }
        
@@ -355,7 +363,7 @@ namespace containers
                 if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
                     return true;
 
-                if(elimination_stack_.pop(value, 32))
+                if(elimination_stack_.pop(value, 0))
                     return true;
 
                 backoff();
