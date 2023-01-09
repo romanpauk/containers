@@ -191,7 +191,15 @@ namespace containers
     // TODO: A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue - https://arxiv.org/abs/1908.04511
 
     // BBQ: A Block-based Bounded Queue - https://www.usenix.org/conference/atc22/presentation/wang-jiawei
-    template< typename T, size_t Size, size_t BlockSize, typename Backoff = exp_backoff<> > class bounded_queue_bbq
+
+    constexpr size_t log2(size_t value) { return value < 2 ? 1 : 1 + log2(value / 2); }
+
+    template<
+        typename T,
+        size_t Size,
+        size_t BlockSize = Size / (1 << (std::max(size_t(1), log2(Size) / 4) - 1)), // log(num of blocks) = max(1, log(size)/4)
+        typename Backoff = exp_backoff<>
+    > class bounded_queue_bbq
     {
         // TODO: spsc mode
         // TODO: drop mode
@@ -463,5 +471,7 @@ namespace containers
                 backoff();
             }
         }
+
+        static constexpr size_t capacity() { return Size; }
     };
 }
