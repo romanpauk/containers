@@ -127,13 +127,13 @@ namespace containers
     // From a BBQ article below.
     template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_queue
     {
-        alignas(64) std::atomic< size_t > chead_;
-        std::atomic< size_t > ctail_;
-
-        alignas(64) std::atomic< size_t > phead_;
-        std::atomic< size_t > ptail_;
-
         static_assert(is_power_of_2<Size>::value);
+
+        alignas(64) std::atomic< size_t > chead_;
+        alignas(64) std::atomic< size_t > ctail_;
+        alignas(64) std::atomic< size_t > phead_;
+        alignas(64) std::atomic< size_t > ptail_;
+
         alignas(64) std::array< T, Size > values_;
 
     public:
@@ -146,9 +146,9 @@ namespace containers
             {
                 auto ph = phead_.load(std::memory_order_acquire);
                 auto pn = ph + 1;
-                if (pn > ctail_.load(std::memory_order_acquire) + Size)
+                if (pn > ctail_.load(std::memory_order_relaxed) + Size)
                     return false;
-                if (!phead_.compare_exchange_strong(ph, pn))
+                if (!phead_.compare_exchange_strong(ph, pn, std::memory_order_release))
                 {
                     backoff();
                 }
@@ -170,9 +170,9 @@ namespace containers
             {
                 auto ch = chead_.load(std::memory_order_acquire);
                 auto cn = ch + 1;
-                if (cn > ptail_.load(std::memory_order_acquire) + 1)
+                if (cn > ptail_.load(std::memory_order_relaxed) + 1)
                     return false;
-                if (!chead_.compare_exchange_strong(ch, cn))
+                if (!chead_.compare_exchange_strong(ch, cn, std::memory_order_release))
                 {
                     backoff();
                 }
@@ -193,6 +193,8 @@ namespace containers
     // BBQ: A Block-based Bounded Queue - https://www.usenix.org/conference/atc22/presentation/wang-jiawei
     template< typename T, size_t Size, size_t BlockSize, typename Backoff = exp_backoff<> > class bounded_queue_bbq
     {
+        // TODO: spsc mode
+        // TODO: drop mode
         enum class allocate_status
         {
             success,
