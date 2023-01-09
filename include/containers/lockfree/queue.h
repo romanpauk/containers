@@ -298,7 +298,7 @@ namespace containers
                             return { reserve_status::not_available, {} };
                     }
 
-                    if (atomic_fetch_and_max(block->reserved, (uint64_t)Cursor(reserved.offset + 1, reserved.version)) == (uint64_t)reserved)
+                    if (atomic_fetch_max_explicit(&block->reserved, (uint64_t)Cursor(reserved.offset + 1, reserved.version)) == (uint64_t)reserved)
                         return { reserve_status::success, { block, reserved.offset, reserved.version } };
                     else
                     {
@@ -338,14 +338,14 @@ namespace containers
             //auto committed = Cursor(next_block.committed.load());
             //if (commited.version == head.version && commited.index != BlockSize)
             //    return advance_status::not_available;
-            atomic_fetch_and_max(next_block.committed, (uint64_t)Cursor(0, head.version + 1));
-            atomic_fetch_and_max(next_block.allocated, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_max_explicit(&next_block.committed, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_max_explicit(&next_block.allocated, (uint64_t)Cursor(0, head.version + 1));
 
             // TODO: how does the article handle wrap-around?
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
 
-            atomic_fetch_and_max(phead_, (uint64_t)Cursor(head.offset + 1, head.version));
+            atomic_fetch_max_explicit(&phead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return advance_status::success;
         }
 
@@ -355,8 +355,8 @@ namespace containers
             auto committed = Cursor(next_block.committed.load());
             if (committed.version != head.version + 1)
                 return false;
-            atomic_fetch_and_max(next_block.consumed, (uint64_t)Cursor(0, head.version + 1));
-            atomic_fetch_and_max(next_block.reserved, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_max_explicit(&next_block.consumed, (uint64_t)Cursor(0, head.version + 1));
+            atomic_fetch_max_explicit(&next_block.reserved, (uint64_t)Cursor(0, head.version + 1));
             // Drop-old mode:
             //if (committed.version < version + (head.index == 0))
             //    return false;
@@ -366,16 +366,20 @@ namespace containers
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
                 
-            atomic_fetch_and_max(chead_, (uint64_t)Cursor(head.offset + 1, head.version));
+            atomic_fetch_max_explicit(&chead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return true;
         }
 
-        template< typename U > U atomic_fetch_and_max(std::atomic< U >& result, U value)
+        // Atomic minimum/maximum - https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p0493r3.pdf
+        template < typename U >
+        U atomic_fetch_max_explicit(std::atomic<U>* pv, typename std::atomic<U>::value_type v, std::memory_order m = std::memory_order_seq_cst) noexcept
         {
-            auto r = result.load(std::memory_order_relaxed);
-            while (r < value && !result.compare_exchange_strong(r, value))
-                _mm_pause();
-            return r;
+            auto t = pv->load(m);
+            while (std::max(v, t) != t) {
+                if (pv->compare_exchange_weak(t, v, m, m))
+                    break;
+            }
+            return t;
         }
 
     public:
