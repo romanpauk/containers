@@ -207,7 +207,7 @@ namespace containers
         enum class status
         {
             success,
-            no_entry,
+            fail,
             busy,
             block_done,
         };
@@ -287,7 +287,7 @@ namespace containers
                 {
                     auto committed = Cursor(block->committed.load());
                     if (committed.offset == reserved.offset)
-                        return { status::no_entry, {} };
+                        return { status::fail, {} };
 
                     if (committed.offset != BlockSize)
                     {
@@ -328,7 +328,7 @@ namespace containers
             {
                 auto reserved = Cursor(next_block.reserved.load());
                 if (reserved.offset == consumed.offset)
-                    return status::no_entry;
+                    return status::fail;
                 else
                     return status::busy;
             }
@@ -416,7 +416,7 @@ namespace containers
                     switch (advance_phead(head))
                     {
                     case status::success: continue;
-                    case status::no_entry: return false; // FULL
+                    case status::fail: return false;
                     case status::busy: break;
                     default: assert(false);
                     }
@@ -446,7 +446,7 @@ namespace containers
                     }
                     break;
                 }
-                case status::no_entry: return false; // EMPTY
+                case status::fail: return false;
                 case status::busy: break;
                 case status::block_done:
                     if (!advance_chead(head, entry.version))
