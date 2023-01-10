@@ -203,24 +203,12 @@ namespace containers
     {
         // TODO: spsc mode
         // TODO: drop mode
-        enum class allocate_status
-        {
-            success,
-            block_done,
-        };
 
-        enum class advance_status
+        enum class status
         {
             success,
             no_entry,
-            not_available,
-        };
-
-        enum class reserve_status
-        {
-            success,
-            no_entry,
-            not_available,
+            busy,
             block_done,
         };
 
@@ -274,14 +262,14 @@ namespace containers
             return { value, &blocks_[value.offset & (blocks_.size() - 1)]};
         }
         
-        std::pair< allocate_status, Entry > allocate_entry(Block* block)
+        std::pair< status, Entry > allocate_entry(Block* block)
         {
             if (Cursor(block->allocated.load()).offset >= BlockSize)
-                return { allocate_status::block_done, {} };
+                return { status::block_done, {} };
             auto allocated = Cursor(block->allocated.fetch_add(1));
             if (allocated.offset >= BlockSize)
-                return { allocate_status::block_done, {} };
-            return { allocate_status::success, { block, allocated.offset, 0 } };
+                return { status::block_done, {} };
+            return { status::success, { block, allocated.offset, 0 } };
         }
 
         template< typename Ty > void commit_entry(Entry entry, Ty&& data)
@@ -290,7 +278,7 @@ namespace containers
             entry.block->committed.fetch_add(1);
         }
 
-        std::pair< reserve_status, Entry > reserve_entry(Block* block, Backoff& backoff)
+        std::pair< status, Entry > reserve_entry(Block* block, Backoff& backoff)
         {
             while (true)
             {
@@ -299,17 +287,17 @@ namespace containers
                 {
                     auto committed = Cursor(block->committed.load());
                     if (committed.offset == reserved.offset)
-                        return { reserve_status::no_entry, {} };
+                        return { status::no_entry, {} };
 
                     if (committed.offset != BlockSize)
                     {
                         auto allocated = Cursor(block->allocated.load());
                         if (committed.offset != allocated.offset)
-                            return { reserve_status::not_available, {} };
+                            return { status::busy, {} };
                     }
 
                     if (atomic_fetch_max_explicit(&block->reserved, (uint64_t)Cursor(reserved.offset + 1, reserved.version)) == (uint64_t)reserved)
-                        return { reserve_status::success, { block, reserved.offset, reserved.version } };
+                        return { status::success, { block, reserved.offset, reserved.version } };
                     else
                     {
                         backoff();
@@ -317,7 +305,7 @@ namespace containers
                     }
                 }
 
-                return { reserve_status::block_done, {} };
+                return { status::block_done, {} };
             }
         }
 
@@ -331,7 +319,7 @@ namespace containers
             return data;
         }
 
-        advance_status advance_phead(Cursor head)
+        status advance_phead(Cursor head)
         {
             auto& next_block = blocks_[(head.offset + 1) & (blocks_.size() - 1)];
             auto consumed = Cursor(next_block.consumed.load());
@@ -340,9 +328,9 @@ namespace containers
             {
                 auto reserved = Cursor(next_block.reserved.load());
                 if (reserved.offset == consumed.offset)
-                    return advance_status::no_entry;
+                    return status::no_entry;
                 else
-                    return advance_status::not_available;
+                    return status::busy;
             }
             // Drop-old mode:
             //auto committed = Cursor(next_block.committed.load());
@@ -356,7 +344,7 @@ namespace containers
                 ++head.version;
 
             atomic_fetch_max_explicit(&phead_, (uint64_t)Cursor(head.offset + 1, head.version));
-            return advance_status::success;
+            return status::success;
         }
 
         bool advance_chead(Cursor head, uint32_t version)
@@ -421,15 +409,15 @@ namespace containers
                 auto [status, entry] = allocate_entry(block);
                 switch (status)
                 {
-                case allocate_status::success:
+                case status::success:
                     commit_entry(entry, std::move(value));
                     return true;
-                case allocate_status::block_done:
+                case status::block_done:
                     switch (advance_phead(head))
                     {
-                    case advance_status::success: continue;
-                    case advance_status::no_entry: return false; // FULL
-                    case advance_status::not_available: break; // BUSY
+                    case status::success: continue;
+                    case status::no_entry: return false; // FULL
+                    case status::busy: break;
                     default: assert(false);
                     }
                 default:
@@ -449,7 +437,7 @@ namespace containers
                 auto [status, entry] = reserve_entry(block, backoff);
                 switch (status)
                 {
-                case reserve_status::success: {
+                case status::success: {
                     auto opt = consume_entry(entry);
                     if (opt)
                     {
@@ -458,9 +446,9 @@ namespace containers
                     }
                     break;
                 }
-                case reserve_status::no_entry: return false; // EMPTY
-                case reserve_status::not_available: break; // BUSY
-                case reserve_status::block_done:
+                case status::no_entry: return false; // EMPTY
+                case status::busy: break;
+                case status::block_done:
                     if (!advance_chead(head, entry.version))
                         return false;
                     continue;
