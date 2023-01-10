@@ -7,190 +7,19 @@
 
 #pragma once
 
-#include <containers/lockfree/detail/hazard_era_allocator.h>
+#include <containers/lockfree/detail/exponential_backoff.h>
 
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <cassert>
 
 namespace containers
 {
-    // Simple, fast, and practical non-blocking and blocking concurrent queue algorithms.
-    // http://www.cs.rochester.edu/~scott/papers/1996_PODC_queues.pdf
-    template < typename T, typename Allocator = hazard_era_allocator< T >, typename Backoff = exp_backoff<> > class unbounded_queue
-    {
-        struct queue_node
-        {
-            T value;
-            std::atomic< queue_node* > next;
-        };
-
-        using allocator_type = typename Allocator::template rebind< queue_node >::other;
-        allocator_type& allocator_;
-        
-        alignas(64) std::atomic< queue_node* > head_;
-        alignas(64) std::atomic< queue_node* > tail_;
-
-    public:
-        using value_type = T;
-
-        unbounded_queue(Allocator& allocator = Allocator::instance())
-            : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
-        {
-            auto n = allocator_.allocate();
-            n->next = nullptr;
-            head_.store(n, std::memory_order_relaxed);
-            tail_.store(n, std::memory_order_relaxed);
-        }
-
-        ~unbounded_queue()
-        {
-            clear();
-        }
-        
-        template< typename Ty > void push(Ty&& value)
-        {
-            auto guard = allocator_.guard();
-            auto n = allocator_.allocate(std::forward< Ty >(value), nullptr);
-            Backoff backoff;
-            while(true)
-            {
-                // TODO: could this benefit from protecting multiple variables in one call?
-                auto tail = allocator_.protect(tail_, std::memory_order_relaxed);
-                auto next = allocator_.protect(tail->next, std::memory_order_relaxed);
-                if (tail == tail_.load())
-                {
-                    if (next == nullptr)
-                    {
-                        if (tail->next.compare_exchange_weak(next, n))
-                        {
-                            tail_.compare_exchange_weak(tail, n);
-                            break;
-                        }
-                        else
-                            backoff();
-                    }
-                    else
-                    {
-                        tail_.compare_exchange_weak(tail, next);
-                    }
-                }
-            }
-        }
-
-        bool pop(T& value)
-        {
-            auto guard = allocator_.guard();
-            Backoff backoff;
-            while (true)
-            {
-                auto head = allocator_.protect(head_, std::memory_order_relaxed);
-                auto next = allocator_.protect(head->next, std::memory_order_relaxed);
-                auto tail = tail_.load();
-                if (head == head_.load())
-                {
-                    if (head == tail)
-                    {
-                        if(next == nullptr)
-                            return false;
-
-                        tail_.compare_exchange_weak(tail, next);
-                    }
-                    else
-                    {
-                        value = next->value;
-                        if (head_.compare_exchange_weak(head, next))
-                        {
-                            allocator_.retire(head);
-                            return true;
-                        }
-                        else
-                            backoff();
-                    }
-                }
-            }
-        }
-
-    private:
-        void clear()
-        {
-            auto head = head_.load();
-            while (head)
-            {
-                auto next = head->next.load();
-                allocator_.deallocate_unsafe(head);
-                head = next;
-            }
-        }
-    };
-
-    // From a BBQ article below.
-    template< typename T, size_t Size, typename Backoff = exp_backoff<> > class bounded_queue
-    {
-        static_assert(is_power_of_2<Size>::value);
-
-        alignas(64) std::atomic< size_t > chead_;
-        alignas(64) std::atomic< size_t > ctail_;
-        alignas(64) std::atomic< size_t > phead_;
-        alignas(64) std::atomic< size_t > ptail_;
-
-        alignas(64) std::array< T, Size > values_;
-
-    public:
-        using value_type = T;
-
-        template< typename Ty > bool push(Ty&& value)
-        {
-            Backoff backoff;
-            while (true)
-            {
-                auto ph = phead_.load(std::memory_order_acquire);
-                auto pn = ph + 1;
-                if (pn > ctail_.load(std::memory_order_relaxed) + Size)
-                    return false;
-                if (!phead_.compare_exchange_strong(ph, pn, std::memory_order_release))
-                {
-                    backoff();
-                }
-                else
-                {
-                    values_[pn & (Size - 1)] = std::forward< Ty >(value);
-                    while (ptail_.load(std::memory_order_acquire) != ph)
-                        _mm_pause();
-                    ptail_.store(pn, std::memory_order_release);
-                    return true;
-                }
-            }
-        }
-
-        bool pop(T& value)
-        {
-            Backoff backoff;
-            while (true)
-            {
-                auto ch = chead_.load(std::memory_order_acquire);
-                auto cn = ch + 1;
-                if (cn > ptail_.load(std::memory_order_relaxed) + 1)
-                    return false;
-                if (!chead_.compare_exchange_strong(ch, cn, std::memory_order_release))
-                {
-                    backoff();
-                }
-                else
-                {
-                    value = std::move(values_[cn & (Size - 1)]);
-                    while (ctail_.load(std::memory_order_acquire) != ch)
-                        _mm_pause();
-                    ctail_.store(cn, std::memory_order_release);
-                    return true;
-                }
-            }
-        }
-    };
-
-    // TODO: A Scalable, Portable, and Memory-Efficient Lock-Free FIFO Queue - https://arxiv.org/abs/1908.04511
-
-    // BBQ: A Block-based Bounded Queue - https://www.usenix.org/conference/atc22/presentation/wang-jiawei
+    //
+    // BBQ: A Block-based Bounded Queue
+    // https://www.usenix.org/conference/atc22/presentation/wang-jiawei
+    //
 
     constexpr size_t log2(size_t value) { return value < 2 ? 1 : 1 + log2(value / 2); }
 
@@ -198,7 +27,7 @@ namespace containers
         typename T,
         size_t Size,
         size_t BlockSize = Size / (1 << (std::max(size_t(1), log2(Size) / 4) - 1)), // log(num of blocks) = max(1, log(size)/4)
-        typename Backoff = exp_backoff<>
+        typename Backoff = exponential_backoff<>
     > class bounded_queue_bbq
     {
         // TODO: spsc mode
@@ -255,13 +84,13 @@ namespace containers
         alignas(64) std::array< Block, Size / BlockSize > blocks_;
         alignas(64) std::atomic< uint64_t > phead_{};
         alignas(64) std::atomic< uint64_t > chead_{};
-      
+
         std::pair< Cursor, Block* > get_block(std::atomic< uint64_t >& head)
         {
             auto value = Cursor(head.load());
-            return { value, &blocks_[value.offset & (blocks_.size() - 1)]};
+            return { value, &blocks_[value.offset & (blocks_.size() - 1)] };
         }
-        
+
         std::pair< status, Entry > allocate_entry(Block* block)
         {
             if (Cursor(block->allocated.load()).offset >= BlockSize)
@@ -363,7 +192,7 @@ namespace containers
             // TODO: how does the article handle wrap-around?
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
-                
+
             atomic_fetch_max_explicit(&chead_, (uint64_t)Cursor(head.offset + 1, head.version));
             return true;
         }

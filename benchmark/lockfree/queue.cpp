@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 
-#include <containers/lockfree/queue.h>
+#include <containers/lockfree/bounded_queue.h>
+#include <containers/lockfree/bounded_queue_bbq.h>
+#include <containers/lockfree/unbounded_queue.h>
 
 #include <benchmark/benchmark.h>
 #include <thread>
@@ -70,7 +72,6 @@ template< typename Queue > static void queue_pop(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
-
 BENCHMARK_TEMPLATE(queue_push_pop,stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop,stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
@@ -83,10 +84,10 @@ BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue<int,1024*16>)->ThreadRan
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue<std::string,1024*16>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue<std::string,1024*16>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,1024*64,1024*16>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,1024*64,1024*16>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,1024*64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,1024*64>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,1024*256,1024*64>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,1024*256,1024*64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int,1024*256>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int,1024*256>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string,1024*256,1024*16>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string,1024*256>)->ThreadRange(1, max_threads)->UseRealTime();

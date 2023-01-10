@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 
+#include <containers/lockfree/bounded_stack.h>
+#include <containers/lockfree/unbounded_stack.h>
 #include <containers/lockfree/stack.h>
 #include <containers/lockfree/counter.h>
 
