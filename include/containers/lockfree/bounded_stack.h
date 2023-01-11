@@ -27,9 +27,6 @@ namespace containers
         uint32_t Mark = 0
     > struct bounded_stack_base
     {
-        static_assert(sizeof(T) <= 8);
-        static_assert(std::is_trivially_copyable_v< T >);
-
         struct node
         {
             alignas(8) T value;
@@ -61,7 +58,7 @@ namespace containers
                 finish(top);
 
                 auto aboveTopCounter = array_[top.index + 1].load(std::memory_order_relaxed).counter;
-                if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }, std::memory_order_release))
+                if (top_.compare_exchange_strong(top, node{ value, top.index + 1, aboveTopCounter + 1 }))
                     return true;
                 backoff();
             }
@@ -84,12 +81,8 @@ namespace containers
                 finish(top);
 
                 auto belowTop = array_[top.index - 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }, std::memory_order_release))
-                {
-                    std::atomic_thread_fence(std::memory_order_acquire);
-                    value = top.value;
+                if (top_.compare_exchange_strong(top, node{ belowTop.value , top.index - 1, belowTop.counter + 1 }))
                     return true;
-                }
                 backoff();
             }
         }
@@ -100,9 +93,9 @@ namespace containers
         void finish(node& n)
         {
             assert(!Mark || n.index != Mark);
-            auto top = array_[n.index].load(std::memory_order_acquire);
+            auto top = array_[n.index].load(std::memory_order_relaxed);
             node expected = { top.value, n.index, n.counter - 1 };
-            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter }, std::memory_order_release);
+            array_[n.index].compare_exchange_strong(expected, { n.value, n.index, n.counter });
         }
     };
 

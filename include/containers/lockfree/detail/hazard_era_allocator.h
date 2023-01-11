@@ -168,7 +168,7 @@ namespace containers
             allocator_traits_type::construct(allocator_, buffer,
                 thread_manager_.era.load(std::memory_order_acquire), std::forward< Args >(args)...);
 
-            if (thread_[thread_id()].allocated++ % freq == 0)
+            if ((thread_[thread_id()].allocated++ & (freq - 1)) == 0)
                 thread_manager_.era.fetch_add(1, std::memory_order_release);
 
             return &buffer->value;
@@ -209,7 +209,7 @@ namespace containers
             buffer->retired = thread_manager_.era.load(std::memory_order_relaxed);
             thread_[thread_id()].retired_buffers.push_back(buffer);
 
-            if (thread_[thread_id()].retired++ % freq == 0)
+            if ((thread_[thread_id()].retired++ & (freq - 1)) == 0)
             {
                 thread_manager_.era.fetch_add(1, std::memory_order_release);
                 cleanup();

@@ -50,7 +50,7 @@ namespace containers
                 else
                 {
                     values_[pn & (Size - 1)] = std::forward< Ty >(value);
-                    while (ptail_.load(std::memory_order_relaxed) != ph)
+                    while (ptail_.load(std::memory_order_acquire) != ph)
                         _mm_pause();
                     ptail_.store(pn, std::memory_order_release);
                     return true;
@@ -73,9 +73,8 @@ namespace containers
                 }
                 else
                 {
-                    std::atomic_thread_fence(std::memory_order_acquire);
                     value = std::move(values_[cn & (Size - 1)]);
-                    while (ctail_.load(std::memory_order_relaxed) != ch)
+                    while (ctail_.load(std::memory_order_acquire) != ch)
                         _mm_pause();
                     ctail_.store(cn, std::memory_order_release);
                     return true;
