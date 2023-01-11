@@ -50,7 +50,7 @@ namespace containers
         {
             auto head = allocator_.allocate(std::forward< Ty >(value), head_.load(std::memory_order_relaxed));
             Backoff backoff;
-            while (!head_.compare_exchange_weak(head->next, head))
+            while (!head_.compare_exchange_weak(head->next, head, std::memory_order_release))
                 backoff();
         }
 
@@ -66,8 +66,9 @@ namespace containers
                     return false;
                 }
 
-                if (head_.compare_exchange_weak(head, head->next))
+                if (head_.compare_exchange_weak(head, head->next, std::memory_order_release))
                 {
+                    std::atomic_thread_fence(std::memory_order_acquire);
                     value = std::move(head->value);
                     allocator_.retire(head);
                     return true;
@@ -80,7 +81,7 @@ namespace containers
     private:
         void clear()
         {
-            auto head = head_.load();
+            auto head = head_.load(std::memory_order_acquire);
             while (head)
             {
                 auto next = head->next;
@@ -138,14 +139,15 @@ namespace containers
                 if (head->stack.push(std::forward< Ty >(value)))
                     return;
 
-                if (top.index == -1 && head_.compare_exchange_weak(head, head->next))
+                if (top.index == -1 && head_.compare_exchange_weak(head, head->next, std::memory_order_release))
                 {
+                    std::atomic_thread_fence(std::memory_order_acquire);
                     allocator_.retire(head);
                 }
                 else
                 {
                     head = allocator_.allocate(nullptr);
-                    if (!head_.compare_exchange_strong(head->next, head))
+                    if (!head_.compare_exchange_weak(head->next, head, std::memory_order_release))
                         allocator_.deallocate_unsafe(head);
                 }
             }
@@ -167,10 +169,13 @@ namespace containers
                 if (!head->next)
                     return false;
 
-                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { T{}, (uint32_t)-1, top.counter + 1 }))
+                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { T{}, (uint32_t)-1, top.counter + 1 }, std::memory_order_release))
                 {
-                    if (head_.compare_exchange_weak(head, head->next))
+                    if (head_.compare_exchange_weak(head, head->next, std::memory_order_release))
+                    {
+                        std::atomic_thread_fence(std::memory_order_acquire);
                         allocator_.retire(head);
+                    }
                 }
             }
         }
@@ -178,7 +183,7 @@ namespace containers
     private:
         void clear()
         {
-            auto head = head_.load();
+            auto head = head_.load(std::memory_order_acquire);
             while (head)
             {
                 auto next = head->next;
