@@ -27,8 +27,8 @@ namespace containers
     {
         struct stack_node
         {
-            T value;
             stack_node* next;
+            T value;
         };
 
         using allocator_type = typename Allocator::template rebind< stack_node >::other;
@@ -43,16 +43,19 @@ namespace containers
 
         ~unbounded_stack()
         {
-            clear();
+            clear(head_.load(std::memory_order_acquire), &allocator_type::deallocate_unsafe);
         }
 
-        template< typename Ty > void push(Ty&& value)
+        template< typename... Args > void emplace(Args&&... args)
         {
-            auto head = allocator_.allocate(std::forward< Ty >(value), head_.load(std::memory_order_relaxed));
+            auto head = allocator_.allocate(head_.load(std::memory_order_relaxed), std::forward< Args >(args)...);
             Backoff backoff;
-            while (!head_.compare_exchange_weak(head->next, head))
+            while (!head_.compare_exchange_weak(head->next, head, std::memory_order_release))
                 backoff();
         }
+
+        void push(T&& value) { emplace(std::move(value)); }
+        void push(const T& value) { emplace(value); }
 
         bool pop(T& value)
         {
@@ -66,7 +69,7 @@ namespace containers
                     return false;
                 }
 
-                if (head_.compare_exchange_weak(head, head->next))
+                if (head_.compare_exchange_weak(head, head->next, std::memory_order_acq_rel))
                 {
                     value = std::move(head->value);
                     allocator_.retire(head);
@@ -77,14 +80,26 @@ namespace containers
             }
         }
 
-    private:
+        bool empty() const { return head_.load(std::memory_order_acquire); }
+
         void clear()
         {
-            auto head = head_.load();
+            Backoff backoff;
+            stack_node* null = nullptr;
+            auto head = head_.load(std::memory_order_acquire);
+            while (!head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
+                backoff();
+
+            clear(head, &allocator_type::retire);
+        }
+
+    private:
+        void clear(stack_node* head, void (allocator_type::*deallocate)(stack_node*))
+        {
             while (head)
             {
                 auto next = head->next;
-                allocator_.deallocate_unsafe(head);
+                (allocator_.*deallocate)(head);
                 head = next;
             }
         }
@@ -120,7 +135,7 @@ namespace containers
         unbounded_blocked_stack(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {
-            head_ = allocator_.allocate(nullptr);
+            head_ = allocator_.allocate();
         }
 
         ~unbounded_blocked_stack()
@@ -128,28 +143,31 @@ namespace containers
             clear();
         }
 
-        template< typename Ty > void push(Ty&& value)
+        template< typename... Args > void emplace(Args&&... args)
         {
             auto guard = allocator_.guard();
             while (true)
             {
                 auto head = allocator_.protect(head_, std::memory_order_relaxed);
                 auto top = head->stack.top_.load(std::memory_order_relaxed);
-                if (head->stack.push(std::forward< Ty >(value)))
+                if (head->stack.emplace(std::forward< Args >(args)...))
                     return;
 
-                if (top.index == -1 && head_.compare_exchange_strong(head, head->next))
+                if (top.index == -1 && head_.compare_exchange_strong(head, head->next, std::memory_order_acq_rel))
                 {
                     allocator_.retire(head);
                 }
                 else
                 {
-                    head = allocator_.allocate(nullptr);
-                    if (!head_.compare_exchange_strong(head->next, head))
+                    head = allocator_.allocate();
+                    if (!head_.compare_exchange_strong(head->next, head, std::memory_order_release))
                         allocator_.deallocate_unsafe(head);
                 }
             }
         }
+
+        void push(T&& value) { emplace(std::move(value)); }
+        void push(const T& value) { emplace(value); }
 
         bool pop(T& value)
         {
@@ -167,18 +185,29 @@ namespace containers
                 if (!head->next)
                     return false;
 
-                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { T{}, (uint32_t)-1, top.counter + 1 }))
+                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { (uint32_t)-1, top.counter + 1, T{} }, std::memory_order_release))
                 {
-                    if (head_.compare_exchange_strong(head, head->next))
+                    if (head_.compare_exchange_strong(head, head->next, std::memory_order_acq_rel))
                         allocator_.retire(head);
                 }
             }
         }
 
+        /* TODO:
+        bool empty() const
+        {
+            auto guard = allocator_.guard();
+            auto head = allocator_.protect(head_, std::memory_order_acquire);
+            return head->stack.empty();
+        }
+        */
+
+        // TODO: public clear
+
     private:
         void clear()
         {
-            auto head = head_.load();
+            auto head = head_.load(std::memory_order_acquire);
             while (head)
             {
                 auto next = head->next;

@@ -63,6 +63,11 @@ namespace containers::detail
             // This has its own fence already
             return cas16(value_, expected, desired);
         }
+
+        bool compare_exchange_weak(T& expected, const T& desired, std::memory_order = std::memory_order_seq_cst)
+        {
+            return compare_exchange_strong(expected, desired);
+        }
     };
 }
 #endif
