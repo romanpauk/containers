@@ -27,8 +27,8 @@ namespace containers
     {
         struct queue_node
         {
-            T value;
             std::atomic< queue_node* > next;
+            T value;
         };
 
         using allocator_type = typename Allocator::template rebind< queue_node >::other;
@@ -54,10 +54,10 @@ namespace containers
             clear();
         }
 
-        template< typename Ty > void push(Ty&& value)
+        template< typename... Args > void emplace(Args&&... args)
         {
             auto guard = allocator_.guard();
-            auto n = allocator_.allocate(std::forward< Ty >(value), nullptr);
+            auto n = allocator_.allocate(nullptr, T{std::forward< Args >(args)...});
             Backoff backoff;
             while (true)
             {
@@ -83,6 +83,9 @@ namespace containers
                 }
             }
         }
+
+        void push(const T& value) { return emplace(value); }
+        void push(T&& value) { return emplace(std::move(value)); }
 
         bool pop(T& value)
         {
@@ -115,6 +118,11 @@ namespace containers
                     }
                 }
             }
+        }
+
+        bool empty() const
+        {
+            return head_.load(std::memory_order_relaxed) == tail_.load(std::memory_order_relaxed);
         }
 
     private:

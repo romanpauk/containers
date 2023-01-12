@@ -101,9 +101,9 @@ namespace containers
             return { status::success, { block, allocated.offset, 0 } };
         }
 
-        template< typename Ty > void commit_entry(Entry entry, Ty&& data)
+        template< typename... Args > void commit_entry(Entry entry, Args&&... args)
         {
-            entry.block->entries[entry.offset] = std::forward< Ty >(data);
+            entry.block->entries[entry.offset] = T{std::forward< Args >(args)...};
             entry.block->committed.fetch_add(1);
         }
 
@@ -229,7 +229,7 @@ namespace containers
             }
         }
 
-        template< typename Ty > bool push(Ty&& value)
+        template< typename... Args > bool emplace(Args&&... args)
         {
             Backoff backoff;
             while (true)
@@ -239,7 +239,7 @@ namespace containers
                 switch (status)
                 {
                 case status::success:
-                    commit_entry(entry, std::move(value));
+                    commit_entry(entry, std::forward< Args >(args)...);
                     return true;
                 case status::block_done:
                     switch (advance_phead(head))
@@ -256,6 +256,9 @@ namespace containers
                 backoff();
             }
         }
+
+        bool push(const T& value) { return emplace(value); }
+        bool push(T&& value) { return emplace(std::move(value)); }
 
         bool pop(T& value)
         {
