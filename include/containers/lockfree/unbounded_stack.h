@@ -63,7 +63,7 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_relaxed);
+                auto head = allocator_.protect(head_, std::memory_order_acquire);
                 if (!head)
                 {
                     return false;
@@ -80,16 +80,15 @@ namespace containers
             }
         }
 
-        bool empty() const { return head_.load(std::memory_order_acquire); }
+        bool empty() const { return head_.load(std::memory_order_relaxed); }
 
         void clear()
         {
             Backoff backoff;
             stack_node* null = nullptr;
-            auto head = head_.load(std::memory_order_acquire);
-            while (!head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
+            auto head = head_.load(std::memory_order_relaxed);
+            while (head && !head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
                 backoff();
-
             clear(head, &allocator_type::retire);
         }
 
@@ -107,7 +106,7 @@ namespace containers
 
     //
     // This algorithm just marks a block for deletion. If either pop or push observe failure
-    // when working with the block, them mark it. Whoever sees marked block, tries to remove it.
+    // when working with the block, they mark it. Whoever sees marked block, tries to remove it.
     // So all are working on sequence of operations (block fine -> marked -> removed).
     //
     // With N=128, we can run hazard_era_reclamation with every allocation/deallocation
@@ -140,7 +139,7 @@ namespace containers
 
         ~unbounded_blocked_stack()
         {
-            clear();
+            clear(head, &allocator_type::deallocate_unsafe);
         }
 
         template< typename... Args > void emplace(Args&&... args)
@@ -148,7 +147,7 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_relaxed);
+                auto head = allocator_.protect(head_, std::memory_order_acquire);
                 auto top = head->stack.top_.load(std::memory_order_relaxed);
                 if (head->stack.emplace(std::forward< Args >(args)...))
                     return;
@@ -174,7 +173,7 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_relaxed);
+                auto head = allocator_.protect(head_, std::memory_order_acquire);
                 if (!head)
                     return false;
 
@@ -202,16 +201,23 @@ namespace containers
         }
         */
 
-        // TODO: public clear
-
-    private:
         void clear()
         {
-            auto head = head_.load(std::memory_order_acquire);
+            Backoff backoff;
+            node* null = nullptr;
+            auto head = head_.load(std::memory_order_relaxed);
+            while (head && !head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
+                backoff();
+            clear(head, &allocator_type::retire);
+        }
+
+    private:
+        void clear(node* head, void (allocator_type::*deallocate)(stack_node*))
+        {
             while (head)
             {
                 auto next = head->next;
-                allocator_.deallocate_unsafe(head);
+                (allocator_.*deallocate)(head);
                 head = next;
             }
         }

@@ -58,7 +58,7 @@ namespace containers
                 finish(top);
 
                 auto above_top = array_[top.index + 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }))
+                if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }, std::memory_order_release))
                     return true;
                 backoff();
             }
@@ -83,7 +83,7 @@ namespace containers
                 finish(top);
 
                 auto below_top = array_[top.index - 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_weak(top, node{ top.index - 1, below_top.counter + 1, below_top.value }))
+                if (top_.compare_exchange_weak(top, node{ top.index - 1, below_top.counter + 1, below_top.value }, std::memory_order_acq_rel))
                 {
                     value = std::move(top.value);
                     return true;
@@ -101,9 +101,9 @@ namespace containers
         void finish(node& n)
         {
             assert(!Mark || n.index != Mark);
-            auto top = array_[n.index].load();
+            auto top = array_[n.index].load(std::memory_order_relaxed);
             node expected = { n.index, n.counter - 1, top.value };
-            array_[n.index].compare_exchange_strong(expected, { n.index, n.counter, n.value });
+            array_[n.index].compare_exchange_strong(expected, { n.index, n.counter, n.value }, std::memory_order_relaxed);
         }
     };
 
