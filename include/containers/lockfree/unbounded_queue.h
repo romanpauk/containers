@@ -109,7 +109,7 @@ namespace containers
                         std::atomic_thread_fence(std::memory_order_acquire);
                         value = next->value;
 
-                        if (head_.compare_exchange_weak(head, next, std::memory_order_relaxed))
+                        if (head_.compare_exchange_weak(head, next, std::memory_order_release))
                         {
                             allocator_.retire(head);
                             return true;
@@ -129,10 +129,10 @@ namespace containers
     private:
         void clear()
         {
-            auto head = head_.load();
+            auto head = head_.load(std::memory_order_acquire);
             while (head)
             {
-                auto next = head->next.load();
+                auto next = head->next.load(std::memory_order_relaxed);
                 allocator_.deallocate(head);
                 head = next;
             }
