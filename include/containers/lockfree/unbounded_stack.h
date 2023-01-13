@@ -50,8 +50,13 @@ namespace containers
         {
             auto head = allocator_.allocate(head_.load(std::memory_order_relaxed), std::forward< Args >(args)...);
             Backoff backoff;
-            while (!head_.compare_exchange_weak(head->next, head, std::memory_order_release))
+            while (true)
+            {
+                if(head_.compare_exchange_weak(head->next, head, std::memory_order_release))
+                    break;
+
                 backoff();
+            }
         }
 
         void push(T&& value) { emplace(std::move(value)); }
@@ -75,8 +80,8 @@ namespace containers
                     allocator_.retire(head);
                     return true;
                 }
-                else
-                    backoff();
+
+                backoff();
             }
         }
 
@@ -144,6 +149,7 @@ namespace containers
 
         template< typename... Args > void emplace(Args&&... args)
         {
+            Backoff backoff;
             auto guard = allocator_.guard();
             while (true)
             {
@@ -162,6 +168,8 @@ namespace containers
                     if (!head_.compare_exchange_strong(head->next, head, std::memory_order_release))
                         allocator_.deallocate(head);
                 }
+
+                backoff();
             }
         }
 
@@ -170,6 +178,7 @@ namespace containers
 
         bool pop(T& value)
         {
+            Backoff backoff;
             auto guard = allocator_.guard();
             while (true)
             {
@@ -189,6 +198,8 @@ namespace containers
                     if (head_.compare_exchange_strong(head, head->next, std::memory_order_acq_rel))
                         allocator_.retire(head);
                 }
+
+                backoff();
             }
         }
 

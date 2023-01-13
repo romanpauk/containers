@@ -60,6 +60,7 @@ namespace containers
                 auto above_top = array_[top.index + 1].load(std::memory_order_relaxed);
                 if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }, std::memory_order_release))
                     return true;
+
                 backoff();
             }
         }

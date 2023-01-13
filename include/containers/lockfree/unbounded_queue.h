@@ -72,14 +72,14 @@ namespace containers
                             tail_.compare_exchange_weak(tail, n, std::memory_order_release);
                             break;
                         }
-                        else
-                            backoff();
                     }
                     else
                     {
                         tail_.compare_exchange_weak(tail, next, std::memory_order_relaxed);
                     }
                 }
+
+                backoff();
             }
         }
 
@@ -114,10 +114,10 @@ namespace containers
                             allocator_.retire(head);
                             return true;
                         }
-                        else
-                            backoff();
                     }
                 }
+
+                backoff();
             }
         }
 

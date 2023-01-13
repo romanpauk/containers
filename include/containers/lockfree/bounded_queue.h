@@ -43,13 +43,9 @@ namespace containers
                 auto pn = ph + 1;
                 if (pn > ctail_.load(std::memory_order_relaxed) + Size)
                     return false;
-                if (!phead_.compare_exchange_strong(ph, pn, std::memory_order_relaxed))
+                if (phead_.compare_exchange_strong(ph, pn, std::memory_order_relaxed))
                 {
-                    backoff();
-                }
-                else
-                {
-                    values_[pn & (Size - 1)] = T{ std::forward< Args >(args)...};
+                    values_[pn & (Size - 1)] = T{ std::forward< Args >(args)... };
                     std::atomic_thread_fence(std::memory_order_release);
 
                     while (ptail_.load(std::memory_order_relaxed) != ph)
@@ -57,6 +53,8 @@ namespace containers
                     ptail_.store(pn, std::memory_order_relaxed);
                     return true;
                 }
+
+                backoff();
             }
         }
 
@@ -72,20 +70,18 @@ namespace containers
                 auto cn = ch + 1;
                 if (cn > ptail_.load(std::memory_order_relaxed) + 1)
                     return false;
-                if (!chead_.compare_exchange_strong(ch, cn, std::memory_order_relaxed))
-                {
-                    backoff();
-                }
-                else
+                if (chead_.compare_exchange_strong(ch, cn, std::memory_order_relaxed))
                 {
                     std::atomic_thread_fence(std::memory_order_acquire);
-
                     value = std::move(values_[cn & (Size - 1)]);
+
                     while (ctail_.load(std::memory_order_relaxed) != ch)
                         _mm_pause();
                     ctail_.store(cn, std::memory_order_relaxed);
                     return true;
                 }
+
+                backoff();
             }
         }
 
