@@ -25,16 +25,16 @@ namespace containers
         typename Backoff = exponential_backoff<>
     > class unbounded_stack
     {
-        struct stack_node
+        struct node
         {
-            stack_node* next;
+            node* next;
             T value;
         };
 
-        using allocator_type = typename Allocator::template rebind< stack_node >::other;
+        using allocator_type = typename Allocator::template rebind< node >::other;
         allocator_type& allocator_;
 
-        alignas(64) std::atomic< stack_node* > head_;
+        alignas(64) std::atomic< node* > head_;
 
     public:
         unbounded_stack(Allocator& allocator = Allocator::instance())
@@ -43,7 +43,7 @@ namespace containers
 
         ~unbounded_stack()
         {
-            clear(head_.load(std::memory_order_acquire), &allocator_type::deallocate_unsafe);
+            clear(head_.load(std::memory_order_acquire), &allocator_type::deallocate);
         }
 
         template< typename... Args > void emplace(Args&&... args)
@@ -85,7 +85,7 @@ namespace containers
         void clear()
         {
             Backoff backoff;
-            stack_node* null = nullptr;
+            node* null = nullptr;
             auto head = head_.load(std::memory_order_relaxed);
             while (head && !head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
                 backoff();
@@ -93,7 +93,7 @@ namespace containers
         }
 
     private:
-        void clear(stack_node* head, void (allocator_type::*deallocate)(stack_node*))
+        void clear(node* head, void (allocator_type::*deallocate)(node*))
         {
             while (head)
             {
@@ -139,7 +139,7 @@ namespace containers
 
         ~unbounded_blocked_stack()
         {
-            clear(head, &allocator_type::deallocate_unsafe);
+            clear(head_.load(std::memory_order_acquire), &allocator_type::deallocate);
         }
 
         template< typename... Args > void emplace(Args&&... args)
@@ -160,7 +160,7 @@ namespace containers
                 {
                     head = allocator_.allocate();
                     if (!head_.compare_exchange_strong(head->next, head, std::memory_order_release))
-                        allocator_.deallocate_unsafe(head);
+                        allocator_.deallocate(head);
                 }
             }
         }
@@ -212,7 +212,7 @@ namespace containers
         }
 
     private:
-        void clear(node* head, void (allocator_type::*deallocate)(stack_node*))
+        void clear(node* head, void (allocator_type::*deallocate)(node*))
         {
             while (head)
             {

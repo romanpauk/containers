@@ -25,17 +25,17 @@ namespace containers
         typename Backoff = exponential_backoff<>
     > class unbounded_queue
     {
-        struct queue_node
+        struct node
         {
-            std::atomic< queue_node* > next;
+            std::atomic< node* > next;
             T value;
         };
 
-        using allocator_type = typename Allocator::template rebind< queue_node >::other;
+        using allocator_type = typename Allocator::template rebind< node >::other;
         allocator_type& allocator_;
 
-        alignas(64) std::atomic< queue_node* > head_;
-        alignas(64) std::atomic< queue_node* > tail_;
+        alignas(64) std::atomic< node* > head_;
+        alignas(64) std::atomic< node* > tail_;
 
     public:
         using value_type = T;
@@ -132,7 +132,7 @@ namespace containers
             while (head)
             {
                 auto next = head->next.load();
-                allocator_.deallocate_unsafe(head);
+                allocator_.deallocate(head);
                 head = next;
             }
         }

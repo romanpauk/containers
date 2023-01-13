@@ -216,7 +216,7 @@ namespace containers
             }
         }
 
-        void deallocate_unsafe(T* ptr)
+        void deallocate(T* ptr)
         {
             auto buffer = hazard_buffer_cast(ptr);
             allocator_traits_type::destroy(allocator_, buffer);
