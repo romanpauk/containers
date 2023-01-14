@@ -37,6 +37,8 @@ namespace containers
         alignas(64) std::atomic< node* > head_;
 
     public:
+        using value_type = T;
+
         unbounded_stack(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {}
@@ -48,11 +50,11 @@ namespace containers
 
         template< typename... Args > void emplace(Args&&... args)
         {
-            auto head = allocator_.allocate(head_.load(std::memory_order_relaxed), std::forward< Args >(args)...);
+            auto head = allocator_.allocate(head_.load(), std::forward< Args >(args)...);
             Backoff backoff;
             while (true)
             {
-                if(head_.compare_exchange_weak(head->next, head, std::memory_order_release))
+                if(head_.compare_exchange_weak(head->next, head))
                     break;
 
                 backoff();
@@ -68,13 +70,13 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_acquire);
+                auto head = allocator_.protect(head_);
                 if (!head)
                 {
                     return false;
                 }
 
-                if (head_.compare_exchange_weak(head, head->next, std::memory_order_acq_rel))
+                if (head_.compare_exchange_weak(head, head->next))
                 {
                     value = std::move(head->value);
                     allocator_.retire(head);
@@ -85,14 +87,14 @@ namespace containers
             }
         }
 
-        bool empty() const { return head_.load(std::memory_order_relaxed); }
+        bool empty() const { return head_.load(); }
 
         void clear()
         {
             Backoff backoff;
             node* null = nullptr;
-            auto head = head_.load(std::memory_order_relaxed);
-            while (head && !head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
+            auto head = head_.load();
+            while (head && !head_.compare_exchange_weak(head, nullptr))
                 backoff();
             clear(head, &allocator_type::retire);
         }
@@ -136,6 +138,8 @@ namespace containers
         alignas(64) std::atomic< node* > head_{};
 
     public:
+        using value_type = T;
+
         unbounded_blocked_stack(Allocator& allocator = Allocator::instance())
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {
@@ -144,7 +148,7 @@ namespace containers
 
         ~unbounded_blocked_stack()
         {
-            clear(head_.load(std::memory_order_acquire), &allocator_type::deallocate);
+            clear(head_.load(), &allocator_type::deallocate);
         }
 
         template< typename... Args > void emplace(Args&&... args)
@@ -153,20 +157,24 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_acquire);
-                auto top = head->stack.top_.load(std::memory_order_relaxed);
+                auto head = allocator_.protect(head_);
+                auto top = head->stack.top_.load();
                 if (head->stack.emplace(std::forward< Args >(args)...))
                     return;
 
-                if (top.index == -1 && head_.compare_exchange_strong(head, head->next, std::memory_order_acq_rel))
+                if (top.index == -1)
                 {
-                    allocator_.retire(head);
+                    if(head_.compare_exchange_strong(head, head->next))
+                    {
+                        allocator_.retire(head);
+                        continue;
+                    }
                 }
                 else
                 {
-                    head = allocator_.allocate();
-                    if (!head_.compare_exchange_strong(head->next, head, std::memory_order_release))
-                        allocator_.deallocate(head);
+                    auto new_head = allocator_.allocate(head);
+                    if (!head_.compare_exchange_strong(new_head->next, new_head))
+                        allocator_.deallocate(new_head);
                 }
 
                 backoff();
@@ -182,21 +190,24 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_acquire);
+                auto head = allocator_.protect(head_);
                 if (!head)
                     return false;
 
-                auto top = head->stack.top_.load(std::memory_order_relaxed);
+                auto top = head->stack.top_.load();
                 if (head->stack.pop(value))
                     return true;
 
                 if (!head->next)
                     return false;
 
-                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { (uint32_t)-1, top.counter + 1, T{} }, std::memory_order_release))
+                if (top.index == -1 || head->stack.top_.compare_exchange_strong(top, { (uint32_t)-1, top.counter + 1, T{} }))
                 {
-                    if (head_.compare_exchange_strong(head, head->next, std::memory_order_acq_rel))
+                    if (head_.compare_exchange_strong(head, head->next))
+                    {
                         allocator_.retire(head);
+                        continue;
+                    }
                 }
 
                 backoff();
@@ -216,10 +227,12 @@ namespace containers
         {
             Backoff backoff;
             node* null = nullptr;
-            auto head = head_.load(std::memory_order_relaxed);
-            while (head && !head_.compare_exchange_weak(head, nullptr, std::memory_order_acq_rel))
+            auto head = head_.load();
+            while (head && !head_.compare_exchange_weak(head, nullptr))
                 backoff();
             clear(head, &allocator_type::retire);
+
+            // TODO: push/pop assume there is always non-null head
         }
 
     private:

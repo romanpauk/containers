@@ -109,16 +109,26 @@ namespace containers
         static const int freq = 1024;
         static_assert(is_power_of_2< freq >::value);
 
-        struct hazard_buffer
+        // TODO: the alignas(64) is a workaround for a crash due to 
+        // hazard_allocator<T>::hazard_buffer having different alignments based on T's alignments
+        // This is caused by treating all hazard_allocator<T>s as the same and reinterpret_casting
+        // between them
+        struct alignas(64) hazard_buffer
         {
+            static const uint64_t magic_tag = 0xcafebabe;
+
             template< typename... Args > hazard_buffer(uint64_t era, Args&&... args)
                 : value{std::forward< Args >(args)...}
                 , allocated(era)
                 , retired(-1)
             {}
 
+        #if defined(_DEBUG)
+            uint64_t tag = magic_tag;
+        #endif
             uint64_t allocated;
             uint64_t retired;
+
             T value;
         };
 
@@ -189,24 +199,10 @@ namespace containers
             }
         }
 
-        T* protect(T* value, std::memory_order order = std::memory_order_seq_cst)
-        {
-            uint64_t max_era = thread_manager_.reservations[thread_id()].max_era.load(std::memory_order_relaxed);
-            while (true)
-            {
-                uint64_t era = thread_manager_.era.load(std::memory_order_acquire);
-                if (max_era == era) return value;
-                if (max_era == 0)
-                    thread_manager_.reservations[thread_id()].min_era.store(era, std::memory_order_release);
-                thread_manager_.reservations[thread_id()].max_era.store(era, std::memory_order_release);
-                max_era = era;
-            }
-        }
-
         void retire(T* ptr)
         {
             auto buffer = hazard_buffer_cast(ptr);
-            buffer->retired = thread_manager_.era.load(std::memory_order_relaxed);
+            buffer->retired = thread_manager_.era.load(std::memory_order_acquire);
             thread_[thread_id()].retired_buffers.push_back(buffer);
 
             if ((thread_[thread_id()].retired++ & (freq - 1)) == 0)
@@ -286,7 +282,9 @@ namespace containers
 
         hazard_buffer* hazard_buffer_cast(T* ptr)
         {
-            return reinterpret_cast<hazard_buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(hazard_buffer, value));
+            auto hb = reinterpret_cast< hazard_buffer* >(reinterpret_cast<uintptr_t>(ptr) - offsetof(hazard_buffer, value));
+            assert(hb->tag == hazard_buffer::magic_tag);
+            return hb;
         }
     };
 }

@@ -47,7 +47,7 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto top = top_.load(std::memory_order_relaxed);
+                auto top = top_.load();
                 if (Mark && top.index == Mark)
                     return false;
                 if (top.index == array_.size() - 1)
@@ -57,8 +57,8 @@ namespace containers
                 // as only operation that can be done is pop and that will finish it.
                 finish(top);
 
-                auto above_top = array_[top.index + 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }, std::memory_order_release))
+                auto above_top = array_[top.index + 1].load();
+                if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }))
                     return true;
 
                 backoff();
@@ -72,7 +72,7 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto top = top_.load(std::memory_order_relaxed);
+                auto top = top_.load();
                 if (Mark && top.index == Mark)
                     return false;
                 if (top.index == 0)
@@ -83,8 +83,8 @@ namespace containers
                 // and push() still helps with finish, it is safe.
                 finish(top);
 
-                auto below_top = array_[top.index - 1].load(std::memory_order_relaxed);
-                if (top_.compare_exchange_weak(top, node{ top.index - 1, below_top.counter + 1, below_top.value }, std::memory_order_acq_rel))
+                auto below_top = array_[top.index - 1].load();
+                if (top_.compare_exchange_weak(top, node{ top.index - 1, below_top.counter + 1, below_top.value }))
                 {
                     value = std::move(top.value);
                     return true;
@@ -102,9 +102,9 @@ namespace containers
         void finish(node& n)
         {
             assert(!Mark || n.index != Mark);
-            auto top = array_[n.index].load(std::memory_order_relaxed);
+            auto top = array_[n.index].load();
             node expected = { n.index, n.counter - 1, top.value };
-            array_[n.index].compare_exchange_strong(expected, { n.index, n.counter, n.value }, std::memory_order_relaxed);
+            array_[n.index].compare_exchange_strong(expected, { n.index, n.counter, n.value });
         }
     };
 
@@ -116,6 +116,7 @@ namespace containers
         : private bounded_stack_base< T, Size, Backoff >
     {
         using base_type = bounded_stack_base< T, Size, Backoff >;
+
     public:
         using value_type = typename base_type::value_type;
 

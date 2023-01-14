@@ -44,8 +44,8 @@ namespace containers
             : allocator_(*reinterpret_cast<allocator_type*>(&allocator))
         {
             auto n = allocator_.allocate();
-            head_.store(n, std::memory_order_relaxed);
-            tail_.store(n, std::memory_order_relaxed);
+            head_.store(n);
+            tail_.store(n);
         }
 
         ~unbounded_queue()
@@ -61,21 +61,21 @@ namespace containers
             while (true)
             {
                 // TODO: could this benefit from protecting multiple variables in one call?
-                auto tail = allocator_.protect(tail_, std::memory_order_relaxed);
-                auto next = allocator_.protect(tail->next, std::memory_order_relaxed);
-                if (tail == tail_.load(std::memory_order_relaxed))
+                auto tail = allocator_.protect(tail_);
+                auto next = allocator_.protect(tail->next);
+                if (tail == tail_.load())
                 {
                     if (next == nullptr)
                     {
-                        if (tail->next.compare_exchange_weak(next, n, std::memory_order_relaxed))
+                        if (tail->next.compare_exchange_weak(next, n))
                         {
-                            tail_.compare_exchange_weak(tail, n, std::memory_order_release);
+                            tail_.compare_exchange_weak(tail, n);
                             break;
                         }
                     }
                     else
                     {
-                        tail_.compare_exchange_weak(tail, next, std::memory_order_relaxed);
+                        tail_.compare_exchange_weak(tail, next);
                     }
                 }
 
@@ -92,24 +92,23 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto head = allocator_.protect(head_, std::memory_order_relaxed);
-                auto next = allocator_.protect(head->next, std::memory_order_relaxed);
-                auto tail = tail_.load(std::memory_order_relaxed);
-                if (head == head_.load(std::memory_order_relaxed))
+                auto head = allocator_.protect(head_);
+                auto tail = tail_.load();
+                auto next = allocator_.protect(head->next);
+                if (head == head_.load())
                 {
                     if (head == tail)
                     {
                         if (next == nullptr)
                             return false;
 
-                        tail_.compare_exchange_weak(tail, next, std::memory_order_relaxed);
+                        tail_.compare_exchange_weak(tail, next);
                     }
                     else
                     {
-                        std::atomic_thread_fence(std::memory_order_acquire);
                         value = next->value;
 
-                        if (head_.compare_exchange_weak(head, next, std::memory_order_release))
+                        if (head_.compare_exchange_weak(head, next))
                         {
                             allocator_.retire(head);
                             return true;
@@ -123,16 +122,16 @@ namespace containers
 
         bool empty() const
         {
-            return head_.load(std::memory_order_relaxed) == tail_.load(std::memory_order_relaxed);
+            return head_.load() == tail_.load();
         }
 
     private:
         void clear()
         {
-            auto head = head_.load(std::memory_order_acquire);
+            auto head = head_.load();
             while (head)
             {
-                auto next = head->next.load(std::memory_order_relaxed);
+                auto next = head->next.load();
                 allocator_.deallocate(head);
                 head = next;
             }

@@ -22,6 +22,8 @@ static const auto iterations = 1024;
 template< typename T > class stl_stack
 {
 public:
+    using value_type = T;
+
     void push(T value)
     {
         auto guard = std::lock_guard(mutex_);
@@ -61,6 +63,38 @@ template< typename Stack > static void stack_push_pop(benchmark::State& state)
     state.SetBytesProcessed(state.iterations() * 2);
 }
 
+static unsigned long mwc()
+{
+https://www.math.uni-bielefeld.de/~sillke/ALGORITHMS/random/marsaglia-c
+http://www.cs.yorku.ca/~oz/marsaglia-rng.html
+    static thread_local unsigned long z = 362436069, w = 521288629;
+#define znew (z=36969*(z&65535)+(z>>16))
+#define wnew (w=18000*(w&65535)+(w>>16))
+#define MWC ((znew<<16)+wnew)
+    return MWC;
+#undef znew
+#undef wnew
+#undef MWC
+}
+
+template< typename Stack > static void stack_push_pop_rand(benchmark::State& state)
+{
+    for (size_t i = 0; i < containers::thread::instance().id(); ++i)
+        mwc();
+
+    static Stack stack;
+    typename Stack::value_type value{}, result{};
+    for (auto _ : state)
+    {
+        if (mwc() & 1)
+            stack.push(value++);
+        else
+            stack.pop(result);
+    }
+
+    state.SetBytesProcessed(state.iterations() * 2);
+}
+
 template< typename Stack > static void stack_push(benchmark::State& state)
 {
     for (auto _ : state)
@@ -76,8 +110,7 @@ template< typename Stack > static void stack_push(benchmark::State& state)
 template< typename Stack > static void stack_pop(benchmark::State& state)
 {
     static Stack stack;
-
-    int value;
+    typename Stack::value_type value;
     for (auto _ : state)
     {
         stack.pop(value);
@@ -105,19 +138,23 @@ static void elimination_stack(benchmark::State& state)
 }
 
 BENCHMARK_TEMPLATE(stack_push_pop,stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop_rand, stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_pop,stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(stack_push_pop,containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_pop,containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(stack_push_pop,containers::bounded_stack<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::bounded_stack<int, 1024>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_push,containers::bounded_stack<int,1024>)->Iterations(iterations)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_pop,containers::bounded_stack<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(stack_push_pop,containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_pop,containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK(elimination_stack)->ThreadRange(1, max_threads)->UseRealTime();
+//BENCHMARK(elimination_stack)->ThreadRange(1, max_threads)->UseRealTime();
 
 template < typename T > struct function_thread_local
 {

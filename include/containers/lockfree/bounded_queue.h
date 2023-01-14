@@ -39,18 +39,16 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto ph = phead_.load(std::memory_order_relaxed);
+                auto ph = phead_.load();
                 auto pn = ph + 1;
-                if (pn > ctail_.load(std::memory_order_relaxed) + Size)
+                if (pn > ctail_.load() + Size)
                     return false;
-                if (phead_.compare_exchange_strong(ph, pn, std::memory_order_relaxed))
+                if (phead_.compare_exchange_strong(ph, pn))
                 {
                     values_[pn & (Size - 1)] = T{ std::forward< Args >(args)... };
-                    std::atomic_thread_fence(std::memory_order_release);
-
-                    while (ptail_.load(std::memory_order_relaxed) != ph)
+                    while (ptail_.load() != ph)
                         _mm_pause();
-                    ptail_.store(pn, std::memory_order_relaxed);
+                    ptail_.store(pn);
                     return true;
                 }
 
@@ -66,18 +64,17 @@ namespace containers
             Backoff backoff;
             while (true)
             {
-                auto ch = chead_.load(std::memory_order_relaxed);
+                auto ch = chead_.load();
                 auto cn = ch + 1;
-                if (cn > ptail_.load(std::memory_order_relaxed) + 1)
+                if (cn > ptail_.load() + 1)
                     return false;
-                if (chead_.compare_exchange_strong(ch, cn, std::memory_order_relaxed))
+                if (chead_.compare_exchange_strong(ch, cn))
                 {
-                    std::atomic_thread_fence(std::memory_order_acquire);
                     value = std::move(values_[cn & (Size - 1)]);
 
-                    while (ctail_.load(std::memory_order_relaxed) != ch)
+                    while (ctail_.load() != ch)
                         _mm_pause();
-                    ctail_.store(cn, std::memory_order_relaxed);
+                    ctail_.store(cn);
                     return true;
                 }
 
@@ -87,7 +84,7 @@ namespace containers
 
         bool empty() const
         {
-            return chead_.load(std::memory_order_relaxed) == ptail_.load(std::memory_order_relaxed);
+            return chead_.load() == ptail_.load();
         }
 
         static constexpr size_t capacity() { return Size; }
