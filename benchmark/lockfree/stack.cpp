@@ -137,22 +137,22 @@ static void elimination_stack(benchmark::State& state)
     state.SetItemsProcessed(elims);
 }
 
-BENCHMARK_TEMPLATE(stack_push_pop,stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop, stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_push_pop_rand, stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(stack_pop,stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_pop, stl_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(stack_push_pop,containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(stack_pop,containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_pop, containers::unbounded_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(stack_push_pop,containers::bounded_stack<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop, containers::bounded_stack<int, 1024>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::bounded_stack<int, 1024>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(stack_push,containers::bounded_stack<int,1024>)->Iterations(iterations)->UseRealTime();
-BENCHMARK_TEMPLATE(stack_pop,containers::bounded_stack<int,1024>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push, containers::bounded_stack<int, 1024>)->Iterations(iterations)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_pop, containers::bounded_stack<int, 1024>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(stack_push_pop,containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_push_pop, containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(stack_push_pop_rand, containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(stack_pop,containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(stack_pop, containers::unbounded_blocked_stack<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 //BENCHMARK(elimination_stack)->ThreadRange(1, max_threads)->UseRealTime();
 

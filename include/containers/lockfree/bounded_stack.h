@@ -8,6 +8,7 @@
 #pragma once
 
 #include <containers/lockfree/detail/exponential_backoff.h>
+#include <containers/lockfree/detail/padding.h>
 #include <containers/lockfree/atomic16.h>
 
 #include <atomic>
@@ -27,18 +28,39 @@ namespace containers
         uint32_t Mark = 0
     > struct bounded_stack_base
     {
-        struct node
+        // By using paddings, make sure all the 16bytes will be zeroed.
+        struct top_node
         {
-            alignas(8) uint32_t index;
+            top_node() = default;
+            top_node(uint32_t i, uint32_t c, T v)
+                : index(i), counter(c), value(v)
+            {}
+
+            uint32_t index;
             uint32_t counter;
-            alignas(8) T value;
+            T value;
+            detail::padding<8 - sizeof(T)> p1;
         };
 
-        static_assert(sizeof(node) == 16);
+        struct array_node
+        {
+            array_node() = default;
+            array_node(uint32_t c, T v)
+                : counter(c), value(v)
+            {}
+
+            uint32_t counter;
+            detail::padding<4> p1;
+            T value;
+            detail::padding<8 - sizeof(T)> p2;
+        };
+
+        static_assert(sizeof(top_node) == 16);
+        static_assert(sizeof(array_node) == 16);
         static_assert(Size > 1);
 
-        alignas(64) atomic16< node > top_{};
-        alignas(64) std::array< atomic16< node >, Size + 1 > array_{};
+        alignas(64) atomic16< top_node > top_{};
+        alignas(64) std::array< atomic16< array_node >, Size + 1 > array_{};
 
         using value_type = T;
 
@@ -48,17 +70,21 @@ namespace containers
             while (true)
             {
                 auto top = top_.load();
+
+                // The article has finish() before if(top.index == empty/full), yet that worsens
+                // pop() and push() scalability for empty and full stacks. As in those cases
+                // push and pop have no effect, we can wait with finish till there will be someone
+                // pushing to empty stack or popping from non empty stack.
+
                 if (Mark && top.index == Mark)
                     return false;
                 if (top.index == array_.size() - 1)
                     return false;
 
-                // See comment below, if the stack is full, we do not need to finish the top,
-                // as only operation that can be done is pop and that will finish it.
                 finish(top);
 
                 auto above_top = array_[top.index + 1].load();
-                if (top_.compare_exchange_weak(top, node{ top.index + 1, above_top.counter + 1, T{ args... } }))
+                if (top_.compare_exchange_weak(top, top_node{ top.index + 1, above_top.counter + 1, T{ args... } }))
                     return true;
 
                 backoff();
@@ -73,18 +99,16 @@ namespace containers
             while (true)
             {
                 auto top = top_.load();
+
                 if (Mark && top.index == Mark)
                     return false;
                 if (top.index == 0)
-                    return false;
+                    return false;              
 
-                // The article has finish() before if(top.index == 0), yet that worsens
-                // pop() scalability in empty stack. As pop on empty stack has no effect,
-                // and push() still helps with finish, it is safe.
                 finish(top);
 
                 auto below_top = array_[top.index - 1].load();
-                if (top_.compare_exchange_weak(top, node{ top.index - 1, below_top.counter + 1, below_top.value }))
+                if (top_.compare_exchange_weak(top, top_node{ top.index - 1, below_top.counter + 1, below_top.value }))
                 {
                     value = std::move(top.value);
                     return true;
@@ -94,17 +118,17 @@ namespace containers
             }
         }
 
-        static constexpr size_t capacity() { return Size; }
+        static constexpr size_t capacity() { return Size - 1; }
 
         // TODO: bool empty() const;
 
     private:
-        void finish(node& n)
+        void finish(top_node& n)
         {
             assert(!Mark || n.index != Mark);
             auto top = array_[n.index].load();
-            node expected = { n.index, n.counter - 1, top.value };
-            array_[n.index].compare_exchange_strong(expected, { n.index, n.counter, n.value });
+            array_node expected { n.counter - 1, top.value };
+            array_[n.index].compare_exchange_strong(expected, { n.counter, n.value });
         }
     };
 

@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
 project(containers VERSION 0.1)
 include(FetchContent)
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS NO)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 enable_testing()
-option(CONTAINERS_ENABLE_TESTING "enable testing through googletest" OFF)
+option(CONTAINERS_ENABLE_TESTING "enable testing through googletest" ON)
 option(CONTAINERS_ENABLE_BENCHMARK "enable benchmarking through googlebenchmark" ON)
 
 find_program(CCACHE_FOUND ccache)
@@ -67,4 +67,16 @@ if(CONTAINERS_ENABLE_BENCHMARK)
 
     target_link_libraries(containers_benchmark containers benchmark::benchmark)
     target_include_directories(containers_benchmark PRIVATE benchmark)
+endif()
+
+if(CONTAINERS_ENABLE_TESTING)
+    add_executable(containers_test
+        test/atomic.cpp
+        test/queue.cpp
+        test/stack.cpp
+    )
+
+    add_test(NAME containers_test COMMAND containers_test)
+    target_link_libraries(containers_test containers gtest_main)
+    target_include_directories(containers_test PRIVATE test)
 endif()
