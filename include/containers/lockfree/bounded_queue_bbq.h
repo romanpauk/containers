@@ -21,6 +21,10 @@ namespace containers
     // https://www.usenix.org/conference/atc22/presentation/wang-jiawei
     //
 
+#if !defined(CONTAINERS_BBQ_MPMC) && !defined(CONTAINERS_BBQ_SPSC)
+#define CONTAINERS_BBQ_SPSC
+#endif
+
     constexpr size_t log2(size_t value) { return value < 2 ? 1 : 1 + log2(value / 2); }
 
     template<
@@ -63,9 +67,13 @@ namespace containers
 
         struct Block
         {
+        #if defined(CONTAINERS_BBQ_MPMC)
             alignas(64) std::atomic< uint64_t > allocated;
+        #endif
             alignas(64) std::atomic< uint64_t > committed;
+        #if defined(CONTAINERS_BBQ_MPMC)
             alignas(64) std::atomic< uint64_t > reserved;
+        #endif
             alignas(64) std::atomic< uint64_t > consumed;
             alignas(64) std::array< T, BlockSize > entries;
         };
@@ -82,33 +90,59 @@ namespace containers
         static_assert(Size / BlockSize > 1);
 
         alignas(64) std::array< Block, Size / BlockSize > blocks_;
+
+    #if defined(CONTAINERS_BBQ_MPMC)
         alignas(64) std::atomic< uint64_t > phead_{};
         alignas(64) std::atomic< uint64_t > chead_{};
+    #endif
+    #if defined(CONTAINERS_BBQ_SPSC)
+        alignas(64) uint64_t phead_{};
+        alignas(64) uint64_t chead_{};
+    #endif
 
-        std::pair< Cursor, Block* > get_block(std::atomic< uint64_t >& head)
+        template< typename Head > std::pair< Cursor, Block* > get_block(const Head& head)
         {
+        #if defined(CONTAINERS_BBQ_MPMC)
             auto value = Cursor(head.load());
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            auto value = Cursor(head);
+        #endif
             return { value, &blocks_[value.offset & (blocks_.size() - 1)] };
         }
 
         std::pair< status, Entry > allocate_entry(Block* block)
         {
+        #if defined(CONTAINERS_BBQ_MPMC)
             if (Cursor(block->allocated.load()).offset >= BlockSize)
                 return { status::block_done, {} };
             auto allocated = Cursor(block->allocated.fetch_add(1));
             if (allocated.offset >= BlockSize)
                 return { status::block_done, {} };
             return { status::success, { block, allocated.offset, 0 } };
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            auto committed = Cursor(block->comitted.load());
+            if (committed.offset >= BlockSize)
+                return { status::block_done, {} };
+            return { status::success, { block, committed.offset, 0 } };
+        #endif
         }
 
         template< typename... Args > void commit_entry(Entry entry, Args&&... args)
         {
             entry.block->entries[entry.offset] = T{std::forward< Args >(args)...};
+        #if defined(CONTAINERS_BBQ_MPMC)
             entry.block->committed.fetch_add(1);
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            entry.block->committed.store(entry.block->committed.load(std::memory_order_relaxed) + 1);
+        #endif
         }
 
         std::pair< status, Entry > reserve_entry(Block* block, Backoff& backoff)
         {
+        #if defined(CONTAINERS_BBQ_MPMC)
             while (true)
             {
                 auto reserved = Cursor(block->reserved.load());
@@ -136,12 +170,34 @@ namespace containers
 
                 return { status::block_done, {} };
             }
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            while (true)
+            {
+                auto consumed = Cursor(block->consumed.load());
+                if (consumed.offset < BlockSize)
+                {
+                    auto committed = Cursor(block->committed.load());
+                    if (committed.offset == consumed.offset)
+                        return { status::fail, {} };
+
+                    return { status::success, { block, consumed.offset, consumed.version } };
+                }
+
+                return { status::block_done, {} };
+            }
+        #endif
         }
 
         std::optional< T > consume_entry(Entry entry)
         {
             std::optional< T > data = entry.block->entries[entry.offset];
+        #if defined(CONTAINERS_BBQ_MPMC)
             entry.block->consumed.fetch_add(1);
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            entry.block->consumed.store(entry.block->consumed.load(std::memory_order_relaxed) + 1);
+        #endif
             // Drop-old mode:
             //auto allocated = entry.block->allocated.load();
             //if(allocated.version != entry.version) data.reset();
@@ -172,7 +228,13 @@ namespace containers
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
 
+        #if defined(CONTAINERS_BBQ_MPMC)
             atomic_fetch_max_explicit(&phead_, (uint64_t)Cursor(head.offset + 1, head.version));
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            phead_ = Cursor(head.offset + 1, head.version);
+        #endif
+
             return status::success;
         }
 
@@ -183,7 +245,9 @@ namespace containers
             if (committed.version != head.version + 1)
                 return false;
             atomic_fetch_max_explicit(&next_block.consumed, (uint64_t)Cursor(0, head.version + 1));
+        #if defined(CONTAINERS_BBQ_MPMC)
             atomic_fetch_max_explicit(&next_block.reserved, (uint64_t)Cursor(0, head.version + 1));
+        #endif
             // Drop-old mode:
             //if (committed.version < version + (head.index == 0))
             //    return false;
@@ -193,7 +257,13 @@ namespace containers
             if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
                 ++head.version;
 
+        #if defined(CONTAINERS_BBQ_MPMC)
             atomic_fetch_max_explicit(&chead_, (uint64_t)Cursor(head.offset + 1, head.version));
+        #endif
+        #if defined(CONTAINERS_BBQ_SPSC)
+            chead_ = Cursor(head.offset + 1, head.version);
+        #endif
+
             return true;
         }
 
@@ -214,17 +284,25 @@ namespace containers
 
         bounded_queue_bbq()
         {
+        #if defined(CONTAINERS_BBQ_MPMC)
             blocks_[0].allocated.store(0);
+        #endif
             blocks_[0].committed.store(0);
+        #if defined(CONTAINERS_BBQ_MPMC)
             blocks_[0].reserved.store(0);
+        #endif
             blocks_[0].consumed.store(0);
 
             for (size_t i = 1; i < blocks_.size(); ++i)
             {
                 auto& block = blocks_[i];
+            #if defined(CONTAINERS_BBQ_MPMC)
                 block.allocated.store(BlockSize);
+            #endif
                 block.committed.store(BlockSize);
+            #if defined(CONTAINERS_BBQ_MPMC)
                 block.reserved.store(BlockSize);
+            #endif
                 block.consumed.store(BlockSize);
             }
         }
