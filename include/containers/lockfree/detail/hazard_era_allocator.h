@@ -115,20 +115,14 @@ namespace containers
         // between them
         struct alignas(64) hazard_buffer
         {
-            static const uint64_t magic_tag = 0xcafebabe;
-
             template< typename... Args > hazard_buffer(uint64_t era, Args&&... args)
                 : value{std::forward< Args >(args)...}
                 , allocated(era)
                 , retired(-1)
             {}
 
-        #if defined(_DEBUG)
-            uint64_t tag = magic_tag;
-        #endif
             uint64_t allocated;
             uint64_t retired;
-
             T value;
         };
 
@@ -282,9 +276,7 @@ namespace containers
 
         hazard_buffer* hazard_buffer_cast(T* ptr)
         {
-            auto hb = reinterpret_cast< hazard_buffer* >(reinterpret_cast<uintptr_t>(ptr) - offsetof(hazard_buffer, value));
-            assert(hb->tag == hazard_buffer::magic_tag);
-            return hb;
+            return reinterpret_cast< hazard_buffer* >(reinterpret_cast<uintptr_t>(ptr) - offsetof(hazard_buffer, value));
         }
     };
 }
