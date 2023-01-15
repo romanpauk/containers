@@ -123,7 +123,7 @@ namespace containers
         typename T,
         typename Allocator = hazard_era_allocator< T >,
         typename Backoff = exponential_backoff<>,
-        typename InnerStack = bounded_stack_base< T, 128, Backoff, -1 >
+        typename InnerStack = bounded_stack_base< T, 128, Backoff, static_cast<uint32_t>(-1) >
     > class unbounded_blocked_stack
     {
         struct node

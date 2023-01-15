@@ -16,9 +16,17 @@
 #include <array>
 #include <vector>
 #include <atomic>
+#include <algorithm>
 
+#if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
+#else
+// TODO
+#include <unistd.h>
+#include <sys/types.h>
+static size_t GetCurrentThreadId() { return gettid(); }
+#endif
 
 namespace containers
 {

@@ -52,7 +52,6 @@ target_sources(containers INTERFACE
     include/containers/lockfree/detail/atomic16_win32.h
     include/containers/lockfree/detail/exponential_backoff.h
     include/containers/lockfree/detail/hazard_era_allocator.h
-    include/containers/lockfree/detail/vbr_allocator.h
     README.md
 )
 
@@ -65,7 +64,11 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         benchmark/lockfree/queue.cpp
     )
 
-    target_link_libraries(containers_benchmark containers benchmark::benchmark)
+    target_link_libraries(containers_benchmark 
+	containers 
+	benchmark::benchmark
+	$<$<PLATFORM_ID:Linux>:atomic>
+    )
     target_include_directories(containers_benchmark PRIVATE benchmark)
 endif()
 
@@ -77,6 +80,10 @@ if(CONTAINERS_ENABLE_TESTING)
     )
 
     add_test(NAME containers_test COMMAND containers_test)
-    target_link_libraries(containers_test containers gtest_main)
+    target_link_libraries(containers_test 
+	containers	
+	gtest_main
+	$<$<PLATFORM_ID:Linux>:atomic>
+    )
     target_include_directories(containers_test PRIVATE test)
 endif()
