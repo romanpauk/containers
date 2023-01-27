@@ -9,6 +9,7 @@
 
 #include <containers/lockfree/detail/exponential_backoff.h>
 #include <containers/lockfree/detail/hazard_era_allocator.h>
+#include <containers/lockfree/detail/parsec_allocator.h>
 #include <containers/lockfree/detail/optional.h>
 #include <containers/lockfree/bounded_stack.h>
 
@@ -124,7 +125,7 @@ namespace containers
     //
     template<
         typename T,
-        typename Allocator = detail::hazard_era_allocator< T >,
+        typename Allocator = detail::parsec_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
         typename InnerStack = bounded_stack_base< T, 128, Backoff, static_cast<uint32_t>(-1) >
     > class unbounded_blocked_stack
