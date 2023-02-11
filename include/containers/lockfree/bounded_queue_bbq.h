@@ -107,6 +107,7 @@ namespace containers
 
         template< typename... Args > constexpr static bool is_thread_local_nothrow_constructible()
         {
+            //return false; // The cost of thread_local construction is like 5-10%
             if constexpr (!std::is_nothrow_constructible_v< T, Args... >)
             {
                 // Thread-local construction means the construction will be attempted outside the
@@ -299,16 +300,36 @@ namespace containers
         }
     };
 
+    /*
+        Invalidating BBQ:
+        To be able to use the queue in unbounded construction, we need to be able to invalidate the queue, so its
+        usage is monotonic and consumers can remove it when they are done with it.
+
+        Producers:
+        After emplace fails, try to invalidate phead.
+        If invalidated successfully, no one will be able to advance phead anymore.
+            The problem is emplaces running at the moment of invalidation that are incrementing allocated
+            as they need to be synchronized with consumers to not lose elements.
+
+        Consumers:
+        After invalid phead is detected, all remaining elements need to be popped and queue removed.
+        Invalidate phead.allocated, or-ing -1 into version. After that, no element will appear in the queue.
+        There can be temporary allocate increment, reserve_entry() will return busy waiting for commit, retrying.
+        The increment will get reverted, causing reserve_entry() return failure on next iteration.
+    */
+
     template<
         typename T,
         size_t Size,
-        size_t BlockSize = Size / (1 << (std::max(size_t(1), log2(Size) / 4) - 1)), // log(num of blocks) = max(1, log(size)/4)
-        typename Backoff = detail::exponential_backoff<>
+        uint32_t Mark = 0,
+        typename Backoff = detail::exponential_backoff<>,
+        size_t BlockSize = Size / (1 << (std::max(size_t(1), log2(Size) / 4) - 1)) // log(num of blocks) = max(1, log(size)/4)
     > class bounded_queue_bbq
         : bounded_queue_bbq_base< T, Size >
     {
         static_assert(BlockSize % 2 == 0);
         static_assert(Size / BlockSize > 1);
+        static_assert(Mark == 0 || Mark == -1);
 
         using base_type = bounded_queue_bbq_base< T, Size >;
         using cursor_type = typename base_type::cursor;
@@ -333,27 +354,83 @@ namespace containers
         alignas(64) std::atomic< uint64_t > phead_{};
         alignas(64) mutable std::atomic< uint64_t > chead_{};
 
+    public:
+        bool invalid()
+        {
+            static_assert(Mark == -1);
+            auto head = cursor_type(phead_.load());
+            return head.version == -1;
+        }
+
+        bool invalidate_phead()
+        {
+            static_assert(Mark == -1);
+            auto head = cursor_type(phead_.load());
+            if (head.version == -1)
+                return true;
+
+            auto current = (uint64_t)head;
+            if (phead_.compare_exchange_strong(current, (uint64_t)cursor_type(head.offset, -1)))
+                return true;
+            
+            return cursor_type(current).version == -1;
+        }
+
+        void invalidate_phead_allocated()
+        {
+            auto head = cursor_type(phead_.load());
+            auto block = &blocks_[head.offset & (blocks_.size() - 1)];
+            block->allocated.fetch_or((uint64_t)cursor_type(0, -1));
+        }
+
+    private:
         std::pair< cursor_type, block_type* > get_block(std::atomic< uint64_t >& head) const
         {
             auto value = cursor_type(head.load());
+            if constexpr (Mark)
+                if(value.version == -1) return { value, nullptr };
+            
             return { value, &blocks_[value.offset & (blocks_.size() - 1)] };
         }
 
         template< typename... Args > std::pair< status_type, entry > allocate_entry(block_type* block, Args&&... args)
         {
-            if (cursor_type(block->allocated.load()).offset >= BlockSize)
+            auto allocated = cursor_type(block->allocated.load());
+            if (allocated.offset >= BlockSize)
                 return { status_type::block_done, {} };
 
+            if constexpr (Mark)
+            {
+                if (allocated.version == -1)
+                    return { status_type::block_done, {} };
+            }
+
+            // std::set.emplace(): The element may be constructed even if there already is an element with the key in the container,
+            // in which case the newly constructed element will be destroyed immediately.
             if constexpr (this->is_thread_local_nothrow_constructible< Args... >())
                 this->thread_local_optional().emplace(std::forward< Args >(args)...);
                 
-            auto allocated = cursor_type(block->allocated.fetch_add(1));
+            allocated = cursor_type(block->allocated.fetch_add(1));
             if (allocated.offset >= BlockSize)
             {
                 if constexpr (this->is_thread_local_nothrow_constructible< Args... >())
                     this->thread_local_optional().reset();
                 
                 return { status_type::block_done, {} };
+            }
+            else
+            {
+                if constexpr (Mark)
+                {
+                    if(allocated.version == -1)
+                    {
+                        block->allocated.fetch_sub(1);
+                        if constexpr (this->is_thread_local_nothrow_constructible< Args... >())
+                            this->thread_local_optional().reset();
+
+                        return { status_type::block_done, {} };
+                    }
+                }
             }
             return { status_type::success, { block, allocated.offset, 0 } };
         }
@@ -428,7 +505,8 @@ namespace containers
 
         status_type advance_phead(cursor_type head)
         {
-            auto& next_block = blocks_[(head.offset + 1) & (blocks_.size() - 1)];
+            auto next_index = (head.offset + 1) & (blocks_.size() - 1);
+            auto& next_block = blocks_[next_index];
             auto consumed = cursor_type(next_block.consumed.load());
             if (consumed.version < head.version ||
                 (consumed.version == head.version && consumed.offset != BlockSize))
@@ -447,16 +525,17 @@ namespace containers
             atomic_fetch_max_explicit(&next_block.allocated, (uint64_t)cursor_type(0, head.version + 1));
 
             // TODO: how does the article handle wrap-around?
-            if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
+            if (next_index == 0)
                 ++head.version;
-
+            
             atomic_fetch_max_explicit(&phead_, (uint64_t)cursor_type(head.offset + 1, head.version));
             return status_type::success;
         }
 
         bool advance_chead(cursor_type head, uint32_t version) const
         {
-            auto& next_block = blocks_[(head.offset + 1) & (blocks_.size() - 1)];
+            auto next_index = (head.offset + 1) & (blocks_.size() - 1);
+            auto& next_block = blocks_[next_index];
             auto committed = cursor_type(next_block.committed.load());
             if (committed.version != head.version + 1)
                 return false;
@@ -468,9 +547,9 @@ namespace containers
             //atomic_fetch_and_max(next_block.reserved, { 0, committed.version });
 
             // TODO: how does the article handle wrap-around?
-            if (((head.offset + 1) & (blocks_.size() - 1)) == 0)
+            if (next_index == 0)
                 ++head.version;
-
+                
             atomic_fetch_max_explicit(&chead_, (uint64_t)cursor_type(head.offset + 1, head.version));
             return true;
         }
@@ -503,6 +582,9 @@ namespace containers
             while (true)
             {
                 auto [head, block] = get_block(phead_);
+                if constexpr (Mark)
+                    if(!block) return false;
+                
                 auto [status, entry] = allocate_entry(block, std::forward< Args >(args)...);
                 switch (status)
                 {

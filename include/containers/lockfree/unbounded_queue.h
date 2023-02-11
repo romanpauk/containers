@@ -9,6 +9,8 @@
 
 #include <containers/lockfree/detail/exponential_backoff.h>
 #include <containers/lockfree/detail/hazard_era_allocator.h>
+#include <containers/lockfree/detail/leaking_allocator.h>
+#include <containers/lockfree/detail/hyaline_allocator.h>
 #include <containers/lockfree/detail/optional.h>
 #include <containers/lockfree/bounded_queue_bbq.h>
 
@@ -149,9 +151,10 @@ namespace containers
     //
     template <
         typename T,
-        typename Allocator = detail::hazard_era_allocator< T >,
+        typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
-        typename InnerQueue = bounded_queue_bbq_block< T, 1024, Backoff >
+        typename InnerQueue = bounded_queue_bbq< T, 1<<16, -1, Backoff >
+        //typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16, Backoff >
     > class unbounded_blocked_queue
     {
         struct node
@@ -192,24 +195,27 @@ namespace containers
                 if (tail->queue.emplace(std::forward< Args >(args)...))
                     return true;
 
-                auto next = allocator_.protect(tail->next);
-                if (tail == tail_.load())
+                if (tail->queue.invalidate_phead())
                 {
-                    if (next == nullptr)
+                    auto next = allocator_.protect(tail->next);
+                    if (tail == tail_.load())
                     {
-                        auto n = allocator_.allocate();
-                        if (tail->next.compare_exchange_weak(next, n))
+                        if (next == nullptr)
                         {
-                            tail_.compare_exchange_weak(tail, n);
+                            auto n = allocator_.allocate();
+                            if (tail->next.compare_exchange_weak(next, n))
+                            {
+                                tail_.compare_exchange_weak(tail, n);
+                            }
+                            else
+                            {
+                                allocator_.retire(n);
+                            }
                         }
                         else
                         {
-                            allocator_.retire(n);
+                            tail_.compare_exchange_weak(tail, next);
                         }
-                    }
-                    else
-                    {
-                        tail_.compare_exchange_weak(tail, next);
                     }
                 }
             }
@@ -226,6 +232,16 @@ namespace containers
                 auto head = allocator_.protect(head_);
                 if (head->queue.pop(value))
                     return true;
+
+                if (head->queue.invalid())
+                {
+                    head->queue.invalidate_phead_allocated();
+
+                    if (head->queue.pop(value))
+                        return true;
+
+                    // The queue is really empty here.
+                }
 
                 auto tail = tail_.load();
                 auto next = allocator_.protect(head->next);
