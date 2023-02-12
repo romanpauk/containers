@@ -8,7 +8,7 @@
 #include <containers/lockfree/bounded_queue.h>
 #include <containers/lockfree/bounded_queue_bbq.h>
 #include <containers/lockfree/unbounded_queue.h>
-
+#include <concurrentqueue.h>
 #include <benchmark/benchmark.h>
 #include <thread>
 #include <queue>
@@ -52,6 +52,31 @@ public:
 private:
     mutable std::mutex mutex_;
     std::queue< T > queue_;
+};
+
+
+template< typename T > class concurrent_queue
+{
+public:
+    using value_type = T;
+
+    bool push(T value)
+    {
+        return queue_.try_enqueue(value);
+    }
+
+    bool pop(T& value)
+    {
+        return queue_.try_dequeue(value);
+    }
+
+    bool empty() const
+    {
+        return queue_.empty();
+    }
+
+private:
+    moodycamel::ConcurrentQueue< T > queue_;
 };
 
 template< typename Queue > static void queue_push_pop(benchmark::State& state)
@@ -134,19 +159,27 @@ BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<int, 1024 
 BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_empty, containers::bounded_queue_bbq<int, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
 */
+
 BENCHMARK_TEMPLATE(queue_push_pop, stl_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, stl_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
-//BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
-//BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::string, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
 
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
+BENCHMARK_TEMPLATE(queue_push_pop, stl_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, stl_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::shared_ptr< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::shared_ptr<int>, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::shared_ptr<int>, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
+
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();

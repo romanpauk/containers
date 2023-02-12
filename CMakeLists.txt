@@ -57,6 +57,11 @@ target_sources(containers INTERFACE
 )
 
 if(CONTAINERS_ENABLE_BENCHMARK)
+    FetchContent_Declare(concurrentqueue
+        GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+        GIT_TAG master) 
+    FetchContent_MakeAvailable(concurrentqueue)
+
     add_executable(containers_benchmark
         benchmark/main.cpp
         benchmark/lockfree/atomic.cpp
@@ -67,6 +72,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     target_link_libraries(containers_benchmark 
         containers 
         benchmark::benchmark
+        concurrentqueue
         $<$<PLATFORM_ID:Linux>:atomic>
     )
     target_include_directories(containers_benchmark PRIVATE benchmark)

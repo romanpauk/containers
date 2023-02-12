@@ -107,7 +107,7 @@ namespace containers
 
         template< typename... Args > constexpr static bool is_thread_local_nothrow_constructible()
         {
-            //return false; // The cost of thread_local construction is like 5-10%
+            // return false; // The cost of thread_local construction is like 5-10%
             if constexpr (!std::is_nothrow_constructible_v< T, Args... >)
             {
                 // Thread-local construction means the construction will be attempted outside the
@@ -315,7 +315,8 @@ namespace containers
         After invalid phead is detected, all remaining elements need to be popped and queue removed.
         Invalidate phead.allocated, or-ing -1 into version. After that, no element will appear in the queue.
         There can be temporary allocate increment, reserve_entry() will return busy waiting for commit, retrying.
-        The increment will get reverted, causing reserve_entry() return failure on next iteration.
+        The increment will get reverted, causing reserve_entry() return failure on next iteration. Such queue
+        can be retired as it is not possible to add an element to it after phead.allocated invalidation.
     */
 
     template<

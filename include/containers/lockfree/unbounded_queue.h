@@ -149,12 +149,16 @@ namespace containers
     // It should be fine, as each block can be used only once and one way only,
     // first pushed, than consumed, once consumed it can not be pushed anymore.
     //
+//#define BBQ_BLOCK
     template <
         typename T,
         typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
-        typename InnerQueue = bounded_queue_bbq< T, 1<<16, -1, Backoff >
-        //typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16, Backoff >
+#if !defined(BBQ_BLOCK)
+        typename InnerQueue = bounded_queue_bbq< T, 1<<18, -1, Backoff >
+#else
+        typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16, Backoff >
+#endif
     > class unbounded_blocked_queue
     {
         struct node
@@ -191,11 +195,12 @@ namespace containers
             while (true)
             {
                 // TODO: could this benefit from protecting multiple variables in one call?
-                auto tail = allocator_.protect(tail_);
+                auto tail = allocator_.protect(tail_, std::memory_order_relaxed);
                 if (tail->queue.emplace(std::forward< Args >(args)...))
                     return true;
-
+            #if !defined(BBQ_BLOCK)
                 if (tail->queue.invalidate_phead())
+            #endif
                 {
                     auto next = allocator_.protect(tail->next);
                     if (tail == tail_.load())
@@ -229,10 +234,10 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_);
+                auto head = allocator_.protect(head_, std::memory_order_relaxed);
                 if (head->queue.pop(value))
                     return true;
-
+            #if !defined(BBQ_BLOCK)
                 if (head->queue.invalid())
                 {
                     head->queue.invalidate_phead_allocated();
@@ -242,7 +247,7 @@ namespace containers
 
                     // The queue is really empty here.
                 }
-
+            #endif
                 auto tail = tail_.load();
                 auto next = allocator_.protect(head->next);
                 if (head == head_.load())
