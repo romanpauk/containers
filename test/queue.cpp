@@ -136,3 +136,8 @@ TEST(bounded_queue_bbq_test, exceptions)
     ASSERT_TRUE(queue.empty());
     ASSERT_EQ(t.value, 1);
 }
+
+TEST(bounded_queue_bbq_test, constructible)
+{
+    static_assert(std::is_nothrow_constructible_v< std::shared_ptr< int >, std::shared_ptr< int > >);
+}

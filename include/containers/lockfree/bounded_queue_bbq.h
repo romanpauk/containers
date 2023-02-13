@@ -107,7 +107,7 @@ namespace containers
 
         template< typename... Args > constexpr static bool is_thread_local_nothrow_constructible()
         {
-            // return false; // The cost of thread_local construction is like 5-10%
+            return false; // The cost of thread_local construction is like 5-10%
             if constexpr (!std::is_nothrow_constructible_v< T, Args... >)
             {
                 // Thread-local construction means the construction will be attempted outside the
