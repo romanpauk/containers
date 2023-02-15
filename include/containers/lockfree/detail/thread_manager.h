@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <containers/lockfree/detail/aligned.h>
+
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>

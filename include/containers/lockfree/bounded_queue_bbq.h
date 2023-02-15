@@ -9,6 +9,7 @@
 
 #include <containers/lockfree/detail/exponential_backoff.h>
 #include <containers/lockfree/detail/optional.h>
+#include <containers/lockfree/detail/thread_manager.h>
 #include <containers/lockfree/atomic.h>
 
 #include <atomic>
@@ -656,6 +657,47 @@ namespace containers
                     return false;
                 }
             }
+        }
+    };
+
+    template<
+        typename T,
+        size_t Size,
+        typename Backoff = detail::exponential_backoff<>
+    > class bounded_queue_relaxed
+    {
+        static const int N = 16;
+        //std::array< detail::aligned< bounded_queue_bbq< T, Size / N, 0 > >, N > queues_;
+        std::array< detail::aligned< bounded_queue< T, Size / N, Backoff > >, N > queues_;
+
+    public:
+        using value_type = T;
+
+        template< typename... Args > bool emplace(Args&&... args)
+        {
+            auto index = detail::thread::instance().id(); //::GetCurrentThreadId();
+            for (size_t i = 0; i < queues_.size(); ++i)
+            {
+                if(queues_[(index + i) & (queues_.size() - 1)].emplace(std::forward< Args >(args)...))
+                    return true;
+            }
+
+            return false;
+        }
+
+        bool push(const T& value) { return emplace(value); }
+        bool push(T&& value) { return emplace(std::move(value)); }
+
+        template< typename Result > bool pop(Result& result)
+        {
+            auto index = detail::thread::instance().id(); //::GetCurrentThreadId();
+            for (size_t i = 0; i < queues_.size(); ++i)
+            {
+                if(queues_[(index + i) & (queues_.size() - 1)].pop(result))
+                    return true;
+            }
+
+            return false;
         }
     };
 }

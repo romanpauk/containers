@@ -149,7 +149,7 @@ namespace containers
     // It should be fine, as each block can be used only once and one way only,
     // first pushed, than consumed, once consumed it can not be pushed anymore.
     //
-//#define BBQ_BLOCK
+#define BBQ_BLOCK
     template <
         typename T,
         typename Allocator = detail::hyaline_allocator< T >,
@@ -158,6 +158,7 @@ namespace containers
         typename InnerQueue = bounded_queue_bbq< T, 1<<18, -1, Backoff >
 #else
         typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16, Backoff >
+        //typename InnerQueue = bounded_queue_relaxed< T, 1 << 16, Backoff >
 #endif
     > class unbounded_blocked_queue
     {
