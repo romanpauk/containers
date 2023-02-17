@@ -67,6 +67,20 @@ namespace containers
         std::atomic< uint64_t >& counter_;
     };
 
+    template< typename Target, typename Source > struct assign;
+
+    template< typename T > struct assign< T, T >
+    {
+        static constexpr bool is_nothrow = std::is_nothrow_move_assignable_v< T >;
+        static void apply(T& target, T&& source) { target = std::move(source); }
+    };
+
+    template< typename T > struct assign< std::optional< T >, T >
+    {
+        static constexpr bool is_nothrow = std::is_nothrow_move_constructible_v< T >;
+        static void apply(std::optional< T >& target, T&& source) { target.emplace(std::move(source)); }
+    };
+
     template<
         typename T,
         size_t Size,
@@ -112,19 +126,15 @@ namespace containers
 
         template< typename R > static void consume_entry(block* block, const entry& entry, R& result)
         {
-            static_assert(std::is_nothrow_move_assignable_v< T >);
+            static_assert(assign< R, T >::is_nothrow); 
 
-            assign(result, std::move(block->entries[entry.offset].value()));
+            assign< R, T >::apply(result, std::move(block->entries[entry.offset].value()));
             block->consumed.fetch_add(1);
 
             // TODO: drop-old mode
         }
 
         static bool empty_check(const block*, cursor, cursor) { return false; }
-
-    private:
-        static void assign(std::optional< T >& result, T&& value) { result.emplace(std::move(value)); }
-        static void assign(T& result, T&& value) { result = std::move(value); }
     };
 
     template<
@@ -195,14 +205,35 @@ namespace containers
             block->entries[entry.offset].emplace(std::forward< Args >(args)...);
             block->flags[entry.offset] = true;
         }
-        
-        template< typename R > static bool consume_entry(block* block, const entry& entry, R& result)
+
+        template< typename R > static std::enable_if_t< assign<R, T >::is_nothrow, bool > consume_entry(block* block, const entry& entry, R& result)
+        {
+            if (block->flags[entry.offset])
+            {
+                assign< R, T >::apply(result, std::move(block->entries[entry.offset].value()));
+                block->entries[entry.offset].reset();
+                block->consumed.fetch_add(1);
+                return true;
+            }
+            else
+            {
+                block->flags[entry.offset] = true;
+                block->consumed.fetch_add(1);
+                return false;
+            }
+
+            // TODO: drop-old mode
+            //auto allocated = entry.block->allocated.load();
+            //if(allocated.version != entry.version) value.reset();
+        }
+
+        template< typename R > static std::enable_if_t< !assign<R, T >::is_nothrow, bool > consume_entry(block * block, const entry & entry, R & result)
         {
             fetch_add add(block->consumed);
             if (block->flags[entry.offset])
             {
                 reset reset(block->entries[entry.offset]);
-                assign(result, std::move(block->entries[entry.offset].value()));
+                assign< R, T >::apply(result, std::move(block->entries[entry.offset].value()));
                 return true;
             }
             else
@@ -226,10 +257,6 @@ namespace containers
 
             return true;
         }
-
-    private:
-        static void assign(std::optional< T >& result, T&& value) { result.emplace(std::move(value)); }
-        static void assign(T& result, T&& value) { result = std::move(value); }
     };
 
     template<
