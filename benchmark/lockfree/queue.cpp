@@ -15,6 +15,8 @@
 #include <mutex>
 #include <random>
 
+#include <concurrentqueue.h>
+
 static const auto max_threads = std::thread::hardware_concurrency();
 
 template< typename T > class stl_queue
@@ -52,6 +54,30 @@ public:
 private:
     mutable std::mutex mutex_;
     std::queue< T > queue_;
+};
+
+template< typename T > class concurrent_queue
+{
+public:
+    using value_type = T;
+
+    bool push(T value)
+    {
+        return queue_.enqueue(value);
+    }
+
+    bool pop(T& value)
+    {
+        return queue_.try_dequeue(value);
+    }
+
+    bool empty() const
+    {
+        return queue_.empty();
+    }
+
+private:
+    moodycamel::ConcurrentQueue< T > queue_;
 };
 
 template< typename Queue > static void queue_push_pop(benchmark::State& state)
@@ -116,38 +142,41 @@ namespace containers::detail
 */
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<int, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::shared_ptr< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::vector< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::vector< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::vector< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::vector< int >>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::shared_ptr< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::shared_ptr< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::shared_ptr<int>, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 
-BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::vector< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
-//BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::vector< int >>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::vector<int>, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::vector<int>>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::vector<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop, stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop, stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_empty, stl_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
-
-BENCHMARK_TEMPLATE(queue_push_pop,containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_pop, containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_empty, containers::unbounded_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();

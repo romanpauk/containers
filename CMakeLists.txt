@@ -50,6 +50,7 @@ target_sources(containers INTERFACE
     include/containers/lockfree/detail/atomic16_win32.h
     include/containers/lockfree/detail/exponential_backoff.h
     include/containers/lockfree/detail/hazard_era_allocator.h
+    include/containers/lockfree/detail/hyaline_allocator.h
     include/containers/lockfree/detail/leaking_allocator.h
     include/containers/lockfree/detail/optional.h
     include/containers/lockfree/detail/thread_manager.h
@@ -57,6 +58,11 @@ target_sources(containers INTERFACE
 )
 
 if(CONTAINERS_ENABLE_BENCHMARK)
+    FetchContent_Declare(concurrentqueue
+        GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+        GIT_TAG master) 
+    FetchContent_MakeAvailable(concurrentqueue)
+
     add_executable(containers_benchmark
         benchmark/main.cpp
         benchmark/lockfree/atomic.cpp
@@ -67,6 +73,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     target_link_libraries(containers_benchmark 
         containers 
         benchmark::benchmark
+        concurrentqueue
         $<$<PLATFORM_ID:Linux>:atomic>
     )
     target_include_directories(containers_benchmark PRIVATE benchmark)
