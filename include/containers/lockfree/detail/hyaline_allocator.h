@@ -55,8 +55,8 @@ namespace containers::detail
         struct guard
         {
             guard(size_t id)
-                : id_(id)
-                , handle_(enter(id))
+                : id_(id & (heads_.size() - 1))
+                , handle_(enter(id_))
             {}
 
             ~guard() { leave(id_, handle_); }
@@ -68,7 +68,7 @@ namespace containers::detail
 
         static node_t* enter(size_t id)
         {
-            heads_[id].store({ nullptr }); // TODO: ref part of ptr
+            heads_[id].store({nullptr}); // TODO: ref part of ptr
             return nullptr;
         }
 
@@ -177,7 +177,9 @@ namespace containers::detail
         hyaline_allocator() {};
         template< typename U, typename AllocatorT > hyaline_allocator(hyaline_allocator< U, AllocatorT >&) {}
 
-        auto guard() { return Hyaline::guard(ThreadManager::instance().id()); }
+        // TODO: using token() no longer guarantees each thread gets its own slot automatically.
+        // But using thread-local id() was too slow. Calling instance is slow.
+        auto guard() { return Hyaline::guard(ThreadManager::token()); }
 
         template< typename... Args > T* allocate(Args&&... args)
         {

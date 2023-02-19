@@ -152,7 +152,7 @@ namespace containers
         typename T,
         typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
-        typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16 >
+        typename InnerQueue = bounded_queue_bbq< T, 1 << 18 >
     > class unbounded_blocked_queue
     {
         struct node
@@ -189,28 +189,33 @@ namespace containers
             while (true)
             {
                 // TODO: could this benefit from protecting multiple variables in one call?
-                auto tail = allocator_.protect(tail_);
+                auto tail = allocator_.protect(tail_, std::memory_order_relaxed);
                 if (tail->queue.emplace(std::forward< Args >(args)...))
                     return true;
 
-                auto next = allocator_.protect(tail->next);
-                if (tail == tail_.load())
+            #if defined(BBQ_INVALIDATION)
+                if (tail->queue.invalidate_phead())
+            #endif
                 {
-                    if (next == nullptr)
+                    auto next = allocator_.protect(tail->next);
+                    if (tail == tail_.load())
                     {
-                        auto n = allocator_.allocate();
-                        if (tail->next.compare_exchange_weak(next, n))
+                        if (next == nullptr)
                         {
-                            tail_.compare_exchange_weak(tail, n);
+                            auto n = allocator_.allocate();
+                            if (tail->next.compare_exchange_weak(next, n))
+                            {
+                                tail_.compare_exchange_weak(tail, n);
+                            }
+                            else
+                            {
+                                allocator_.retire(n);
+                            }
                         }
                         else
                         {
-                            allocator_.retire(n);
+                            tail_.compare_exchange_weak(tail, next);
                         }
-                    }
-                    else
-                    {
-                        tail_.compare_exchange_weak(tail, next);
                     }
                 }
             }
@@ -224,9 +229,19 @@ namespace containers
             auto guard = allocator_.guard();
             while (true)
             {
-                auto head = allocator_.protect(head_);
+                auto head = allocator_.protect(head_, std::memory_order_relaxed);
                 if (head->queue.pop(value))
                     return true;
+
+            #if defined(BBQ_INVALIDATION)
+                if (head->queue.invalidate_phead_allocated())
+                {
+                    if (head->queue.pop(value))
+                        return true;
+
+                    // Here the queue is really empty
+                }
+            #endif
 
                 auto tail = tail_.load();
                 auto next = allocator_.protect(head->next);

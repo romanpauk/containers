@@ -73,9 +73,21 @@ namespace containers::detail
             return registration.index_;
         }
 
+        static size_t token()
+        {
+        #if defined(_WIN32)
+           return __readgsqword(0x30); // Address of Thread Information Block
+        #else
+            return reinterpret_cast<size_t>(&token_);
+        #endif
+        }
+
     private:
         alignas(64) std::array < detail::aligned< std::atomic< uint64_t > >, N > thread_ids;
+        static thread_local size_t token_;
     };
+
+    template< size_t N > thread_local size_t thread_manager< N >::token_;
 
     using thread = thread_manager<>;
 }
