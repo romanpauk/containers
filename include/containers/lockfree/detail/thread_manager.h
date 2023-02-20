@@ -76,10 +76,16 @@ namespace containers::detail
         static size_t token()
         {
         #if defined(_WIN32)
-           return __readgsqword(0x30); // Address of Thread Information Block
+            return mix(__readgsqword(0x30)); // Address of Thread Information Block
         #else
-            return reinterpret_cast<size_t>(&token_);
+            return mix(reinterpret_cast<size_t>(&token_));
         #endif
+        }
+
+        static size_t mix(size_t value)
+        {
+            // Bring upper bits down so they impact 'value & (size - 1)'
+            return value ^= (value >> 47) ^ (value >> 23);
         }
 
     private:
