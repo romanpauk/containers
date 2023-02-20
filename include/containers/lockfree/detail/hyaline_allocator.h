@@ -177,9 +177,9 @@ namespace containers::detail
         hyaline_allocator() {};
         template< typename U, typename AllocatorT > hyaline_allocator(hyaline_allocator< U, AllocatorT >&) {}
 
-        // TODO: using token() no longer guarantees each thread gets its own slot automatically.
-        // But using thread-local id() was too slow. Calling instance is slow.
-        auto guard() { return Hyaline::guard(ThreadManager::token()); }
+        // TODO: in some cases using token() is a bit faster (sometimes around 10%). On the other hand non-sequential
+        // id requires DCAS later. For simplicity, try to finish this with id() and see.
+        auto guard() { return Hyaline::guard(ThreadManager::id()); }
 
         template< typename... Args > T* allocate(Args&&... args)
         {
