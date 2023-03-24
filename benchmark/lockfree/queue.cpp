@@ -134,12 +134,12 @@ template< typename Queue > static void queue_empty(benchmark::State& state)
     state.SetBytesProcessed(state.iterations());
 }
 
-/*
 namespace containers::detail
 {
-    template< typename T > struct is_trivial< std::shared_ptr< T > >: std::true_type {};
+    // In-place construction is cheaper than construction and move
+    //template< typename T > struct is_trivial< std::shared_ptr< T > >: std::true_type {};
+    //template<> struct is_trivial< std::string > : std::true_type {};
 }
-*/
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<int, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<int>)->ThreadRange(1, max_threads)->UseRealTime();
@@ -163,6 +163,7 @@ BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<int>)->ThreadRange(1, max_th
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::string, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop, containers::unbounded_blocked_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
+
 BENCHMARK_TEMPLATE(queue_push_pop, concurrent_queue<std::string>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<std::shared_ptr<int>, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
@@ -192,3 +193,4 @@ BENCHMARK_TEMPLATE(queue_push_pop, containers::bounded_queue_bbq<int, 1 << 16>)-
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<int, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_pop, containers::bounded_queue_bbq<int, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_empty, containers::bounded_queue_bbq<int, 1 << 16>)->ThreadRange(1, max_threads)->UseRealTime();
+
