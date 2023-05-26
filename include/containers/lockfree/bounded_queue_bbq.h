@@ -624,6 +624,7 @@ namespace containers
                     case status::fail: return false;
                     default: assert(false);
                     }
+                    break;
                 default:
                     assert(false);
                 }

@@ -23,130 +23,211 @@
 
 // TODO: not finished, just for perf testing
 
+#define DEBUG_(...)
+//#define DEBUG_(...) fprintf(stderr, __VA_ARGS__)
+
 namespace containers::detail
 {
-    template< size_t N > struct hyaline1
-    {
-        struct node_t
-        {
-            union
-            {
-                std::atomic< int > ref;
-                node_t* next;
+    // TODO: this should just be freelist of buffers of some size, so they can be reused between different allocator instances
+    template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > struct free_list {
+        struct buffer {
+            union {
+                T value;
+                buffer* next;
             };
-
-            node_t* ref_node;
-            node_t* batch_node;
         };
 
-        struct head_t
-        {
-            //int ref; // for Hyaline-1 version, the ref is always 1 and can be part of ptr
-            node_t* ptr;
-        };
+        alignas(64) aligned< std::atomic< buffer* > > head_;
+        
+        using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< buffer >;
+        using allocator_traits_type = std::allocator_traits< allocator_type >;
+        alignas(64) allocator_type allocator_; // TODO: move out
 
-        struct local_batch_t
-        {
-            node_t* ref_node;
-            node_t* node;
-            // int minEra // For Hyaline-s or -1s
-        };
-
-        struct guard
-        {
-            guard(size_t id)
-                : id_(id & (heads_.size() - 1))
-                , handle_(enter(id_))
-            {}
-
-            ~guard() { leave(id_, handle_); }
-
-        private:
-            size_t id_;
-            node_t* handle_;
-        };
-
-        static node_t* enter(size_t id)
-        {
-            heads_[id].store({nullptr}); // TODO: ref part of ptr
-            return nullptr;
+        ~free_list() {
+            clear();
         }
-
-        static void leave(size_t id, node_t* node)
-        {
-            auto head = heads_[id].exchange({ nullptr });
-            if (head.ptr != nullptr)
-                traverse(head.ptr, node);
-        }
-
-        static void traverse(node_t* next, node_t* node)
-        {
-            node_t* current = nullptr;
-            do
-            {
-                current = next;
-                if (!current)
-                    break;
-                auto ref = current->ref_node;
-                if (ref->ref.fetch_add(-1) == 1)
-                    ;//free_batch(ref->batch_next);
-            } while (current != node);
-        }
-
-        static void retire(local_batch_t* batch)
-        {
-            // int empty = 0;
-            int inserts = 0;
-            auto current = batch->node;
-            batch->ref_node->ref = 0;
-
-            for (size_t i = 0; i < heads_.size(); ++i)
-            {
-                head_t head{};
-                head_t new_head{};
-                do
-                {
-                    head = heads_[i];
-                    if (head.ptr == nullptr)
-                    {
-                        // empty += 1; // TODO: Adjs?
-
-                        // TODO: continue with next I
-                    }
-                    new_head.ptr = current;
-                    // new_head.ref = 1...
-                    new_head.ptr->next = head.ptr;
+        
+        T* allocate() {
+            Backoff backoff;
+            while (true) {
+                auto head = head_.load();
+                if (!head) {
+                    auto ptr = allocator_traits_type::allocate(allocator_, 1);
+                    //allocator_traits_type::construct(allocator_, ptr); // TODO - T is not constructed
+                    return &ptr->value;
                 }
-                while(false); //!heads_[i].compare_exchange(head, new_head));
 
-                current = current->batch_node;
-                inserts++; // #2# //adjust(head->ptr, Adjs + 1 /* head.ref */);
+                if (head_.compare_exchange_weak(head, head->next)) {
+                    return &head->value;
+                }
+
+                backoff();
             }
-
-            adjust(batch->node, inserts); // #3#
         }
 
-        static void adjust(node_t* node, int value)
-        {
-            auto ref_node = node->ref_node;
-            if (ref_node->ref.fetch_add(value) == -value); // TODO: free_batch
+        void deallocate(T* ptr) {
+            auto head = buffer_cast(ptr);
+            head->next = nullptr;
+            Backoff backoff;
+            while (true) {
+                if(head_.compare_exchange_weak(head->next, head))
+                    break;
+                backoff();
+            }
         }
 
-        alignas(64) static std::array< detail::aligned< std::atomic< head_t > >, N > heads_;
+        static buffer* buffer_cast(T* ptr) {
+            return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, value));
+        }
+
+        void clear() {
+            buffer* head = head_.load();
+            if (head) {
+                do {
+                    buffer* next = head->next;
+                    allocator_traits_type::deallocate(allocator_, head, 1);
+                    head = next;
+                } while(head);
+            }
+        }
     };
-
-    template< size_t N >
-    std::array< detail::aligned< std::atomic< typename hyaline1< N >::head_t > >, N > hyaline1< N >::heads_;
 
     template<
         typename T,
         typename Allocator = std::allocator< T >,
         typename ThreadManager = thread,
-        typename Hyaline = hyaline1< thread::max_threads >
-    > class hyaline_allocator
-        : public Hyaline
-    {
-        // template< typename U, typename AllocatorU > friend class hyaline_allocator;
+        size_t N = ThreadManager::max_threads
+    > class hyaline_allocator {
+        using hyaline_allocator_type = hyaline_allocator< T, Allocator, ThreadManager >;
+
+        static constexpr size_t Adjs = uint64_t(-1) / N + 1;
+
+        struct node_t {
+            std::atomic< int64_t > ref;
+            // TODO: this should be a buffer of allocated objects
+        };
+
+        struct node_list_t {
+            std::atomic< node_list_t* > next;
+            size_t id;
+            node_t* node;
+        };
+
+        alignas(64) std::array< aligned< free_list< node_list_t > >, N > node_lists_;
+        
+        struct head_t {
+            head_t() = default;
+            head_t(node_list_t* node, uint64_t ref) {
+                address = reinterpret_cast<uintptr_t>(node) | ref;
+            }
+
+            node_list_t* get_ptr() { return reinterpret_cast<node_list_t*>(address & ~1); }
+            uint64_t get_ref() { return address & 1; }
+
+        private:
+            union {
+                node_list_t* ptr;
+                uintptr_t address;
+            };
+        };
+
+        alignas(64) std::array< detail::aligned< std::atomic< head_t > >, N > heads_;
+
+        struct guard_class
+        {
+            guard_class(hyaline_allocator_type& allocator, size_t id)
+                : allocator_(allocator)
+                , id_(id & (allocator.heads_.size() - 1))
+                , end_(allocator.enter(id_)) {}
+
+            ~guard_class() { allocator_.leave(id_, end_); }
+
+        private:
+            hyaline_allocator_type& allocator_;
+            size_t id_;
+            node_list_t* end_;
+        };
+
+        node_list_t* enter(size_t id) {
+            heads_[id].store({ nullptr, 1 });
+            return nullptr;
+        }
+
+        void leave(size_t id, node_list_t* node) {
+            auto head = heads_[id].exchange({ nullptr, 0 });
+            if (head.get_ptr() != nullptr)
+                traverse(head.get_ptr(), node);
+        }
+
+        void traverse(node_list_t* node, node_list_t* end) {
+            DEBUG_("[%llu] traverse(): %p\n", thread::id(), node);
+            node_list_t* current = nullptr;
+            do {
+                current = node;
+                if (!current)
+                    break;
+                //fprintf(stderr, "[%lu] traverse %p\n", thread::id(), current);
+                node = current->next; // TODO: next is shared with refcount
+                //auto ref = current->ref_node;
+                auto prev = current->node->ref.fetch_add(-1);
+                if (prev == 1) {
+                    DEBUG_("[%llu] free_batch() from traverse(): %p, prev=%lld\n", thread::id(), current->node, prev);
+                    free(current);
+                } else {
+                    //fprintf(stderr, "[%llu] skipped free_batch() from traverse(): %p, prev=%lld\n", thread::id(), current, prev);
+                }
+            } while (current != end);
+        }
+
+        void retire(node_t* node) {
+            int inserts = 0;
+            node->ref = 0;
+            
+            auto id = thread::id();
+            for (size_t i = 0; i < heads_.size(); ++i) {
+                head_t head{};
+                head_t new_head{};
+                do {
+                    head = heads_[i];
+                    if (head.get_ref() == 0)
+                        goto next;
+
+                    auto n = node_lists_[id].allocate();
+                    n->id = id;
+                    n->next = nullptr;
+                    n->node = node;
+        
+                    new_head = head_t(n, head.get_ref());
+                    n->next = head.get_ptr();
+                } while (!heads_[i].compare_exchange_strong(head, new_head));
+                ++inserts;
+                //fprintf(stderr, "[%llu] \tappended new_head=%p, old_head=%p into %llu\n", thread::id(), new_head.get_ptr(), head.get_ptr(), i);
+            next:
+                ;
+            }
+
+            DEBUG_("[%llu] retire %p, inserts %d\n", thread::id(), node, inserts);
+
+            // TODO: How is this supposed to work if it frees the node but not removes it from the list?
+            adjust(node, inserts);
+        }
+
+        void adjust(node_t* node, int value) {
+            //auto ref_node = node->ref_node;
+            //assert(ref_node);
+            if (node->ref.fetch_add(value) == -value) {
+                DEBUG_("[%llu] free_batch() from adjust() due to FAA %d: %p\n", thread::id(), value, node);
+                std::abort(); // TODO
+                //free(node);
+            }
+        }
+
+        void free(node_list_t* node) {
+            auto buffer = buffer_cast(node->node);
+            allocator_traits_type::destroy(allocator_, buffer);
+            allocator_traits_type::deallocate(allocator_, buffer, 1);
+            node_lists_[node->id].deallocate(node);
+        }
         
         struct buffer
         {
@@ -154,7 +235,7 @@ namespace containers::detail
                 : value{ std::forward< Args >(args)... }
             {}
 
-            typename Hyaline::node_t node{};
+            typename node_t node{};
             T value;
         };
 
@@ -163,9 +244,12 @@ namespace containers::detail
 
         allocator_type allocator_;
 
-        static buffer* buffer_cast(T* ptr)
-        {
+        static buffer* buffer_cast(T* ptr) {
             return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, value));
+        }
+
+        static buffer* buffer_cast(node_t* ptr) {
+            return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, node));
         }
         
     public:
@@ -179,12 +263,15 @@ namespace containers::detail
 
         // TODO: in some cases using token() is a bit faster (sometimes around 10%). On the other hand non-sequential
         // id requires DCAS later. For simplicity, try to finish this with id() and see.
-        auto guard() { return Hyaline::guard(ThreadManager::id()); }
+        auto guard() { return guard_class(*this, ThreadManager::id()); }
 
         template< typename... Args > T* allocate(Args&&... args)
         {
             auto ptr = allocator_traits_type::allocate(allocator_, 1);
             allocator_traits_type::construct(allocator_, ptr, std::forward< Args >(args)...);
+
+            DEBUG_("[%llu] allocate(): %p\n", thread::id(), &ptr->node);
+
             return &ptr->value;
         }
 
@@ -192,12 +279,11 @@ namespace containers::detail
         {
             return value.load(order);
         }
- 
+
+        // TODO: store the retired node on guard
         void retire(T* ptr)
         {
-            Hyaline::local_batch_t batch;
-            batch.node = &buffer_cast(ptr)->node;
-            // Hyaline::retire(&batch);
+            retire(&buffer_cast(ptr)->node);
         }
 
         void deallocate(T* ptr)
