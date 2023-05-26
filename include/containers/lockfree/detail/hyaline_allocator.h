@@ -29,8 +29,9 @@
 namespace containers::detail
 {
     // TODO: this should just be freelist of buffers of some size, so they can be reused between different allocator instances
-    template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > struct free_list {
+    template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > class free_list {
         struct buffer {
+            buffer(): value() {}
             union {
                 T value;
                 buffer* next;
@@ -43,6 +44,7 @@ namespace containers::detail
         using allocator_traits_type = std::allocator_traits< allocator_type >;
         alignas(64) allocator_type allocator_; // TODO: move out
 
+    public:
         ~free_list() {
             clear();
         }
@@ -53,7 +55,7 @@ namespace containers::detail
                 auto head = head_.load();
                 if (!head) {
                     auto ptr = allocator_traits_type::allocate(allocator_, 1);
-                    //allocator_traits_type::construct(allocator_, ptr); // TODO - T is not constructed
+                    allocator_traits_type::construct(allocator_, ptr);
                     return &ptr->value;
                 }
 
@@ -76,18 +78,17 @@ namespace containers::detail
             }
         }
 
+    private:
         static buffer* buffer_cast(T* ptr) {
             return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, value));
         }
 
         void clear() {
             buffer* head = head_.load();
-            if (head) {
-                do {
-                    buffer* next = head->next;
-                    allocator_traits_type::deallocate(allocator_, head, 1);
-                    head = next;
-                } while(head);
+            while (head) {
+                buffer* next = head->next;
+                allocator_traits_type::deallocate(allocator_, head, 1);
+                head = next;
             }
         }
     };
@@ -100,7 +101,7 @@ namespace containers::detail
     > class hyaline_allocator {
         using hyaline_allocator_type = hyaline_allocator< T, Allocator, ThreadManager >;
 
-        static constexpr size_t Adjs = uint64_t(-1) / N + 1;
+        static constexpr size_t Adjs = uint64_t(-1) / N + 1; // Needed for different Hyaline version
 
         struct node_t {
             std::atomic< int64_t > ref;
@@ -108,6 +109,7 @@ namespace containers::detail
         };
 
         struct node_list_t {
+            node_list_t() = default;
             std::atomic< node_list_t* > next;
             size_t id;
             node_t* node;
@@ -133,8 +135,7 @@ namespace containers::detail
 
         alignas(64) std::array< detail::aligned< std::atomic< head_t > >, N > heads_;
 
-        struct guard_class
-        {
+        struct guard_class {
             guard_class(hyaline_allocator_type& allocator, size_t id)
                 : allocator_(allocator)
                 , id_(id & (allocator.heads_.size() - 1))
@@ -166,15 +167,9 @@ namespace containers::detail
                 current = node;
                 if (!current)
                     break;
-                //fprintf(stderr, "[%lu] traverse %p\n", thread::id(), current);
-                node = current->next; // TODO: next is shared with refcount
-                //auto ref = current->ref_node;
-                auto prev = current->node->ref.fetch_add(-1);
-                if (prev == 1) {
-                    DEBUG_("[%llu] free_batch() from traverse(): %p, prev=%lld\n", thread::id(), current->node, prev);
+                node = current->next;
+                if (current->node->ref.fetch_add(-1) == 1) {
                     free(current);
-                } else {
-                    //fprintf(stderr, "[%llu] skipped free_batch() from traverse(): %p, prev=%lld\n", thread::id(), current, prev);
                 }
             } while (current != end);
         }
@@ -201,36 +196,27 @@ namespace containers::detail
                     n->next = head.get_ptr();
                 } while (!heads_[i].compare_exchange_strong(head, new_head));
                 ++inserts;
-                //fprintf(stderr, "[%llu] \tappended new_head=%p, old_head=%p into %llu\n", thread::id(), new_head.get_ptr(), head.get_ptr(), i);
             next:
                 ;
             }
-
-            DEBUG_("[%llu] retire %p, inserts %d\n", thread::id(), node, inserts);
 
             // TODO: How is this supposed to work if it frees the node but not removes it from the list?
             adjust(node, inserts);
         }
 
         void adjust(node_t* node, int value) {
-            //auto ref_node = node->ref_node;
-            //assert(ref_node);
             if (node->ref.fetch_add(value) == -value) {
-                DEBUG_("[%llu] free_batch() from adjust() due to FAA %d: %p\n", thread::id(), value, node);
                 std::abort(); // TODO
                 //free(node);
             }
         }
 
         void free(node_list_t* node) {
-            auto buffer = buffer_cast(node->node);
-            allocator_traits_type::destroy(allocator_, buffer);
-            allocator_traits_type::deallocate(allocator_, buffer, 1);
+            deallocate(buffer_cast(node->node));
             node_lists_[node->id].deallocate(node);
         }
         
-        struct buffer
-        {
+        struct buffer {
             template< typename... Args > buffer(Args&&... args)
                 : value{ std::forward< Args >(args)... }
             {}
@@ -251,10 +237,14 @@ namespace containers::detail
         static buffer* buffer_cast(node_t* ptr) {
             return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, node));
         }
-        
+
+        void deallocate(buffer* ptr) {
+            allocator_traits_type::destroy(allocator_, ptr);
+            allocator_traits_type::deallocate(allocator_, ptr, 1);
+        }
+
     public:
-        template< typename U > struct rebind
-        {
+        template< typename U > struct rebind {
             using other = hyaline_allocator< U, typename std::allocator_traits< Allocator >::template rebind_alloc< U > >;
         };
 
@@ -265,32 +255,23 @@ namespace containers::detail
         // id requires DCAS later. For simplicity, try to finish this with id() and see.
         auto guard() { return guard_class(*this, ThreadManager::id()); }
 
-        template< typename... Args > T* allocate(Args&&... args)
-        {
+        template< typename... Args > T* allocate(Args&&... args) {
             auto ptr = allocator_traits_type::allocate(allocator_, 1);
             allocator_traits_type::construct(allocator_, ptr, std::forward< Args >(args)...);
-
-            DEBUG_("[%llu] allocate(): %p\n", thread::id(), &ptr->node);
-
             return &ptr->value;
         }
 
-        T* protect(const std::atomic< T* >& value, std::memory_order order = std::memory_order_seq_cst)
-        {
+        T* protect(const std::atomic< T* >& value, std::memory_order order = std::memory_order_seq_cst) {
             return value.load(order);
         }
 
         // TODO: store the retired node on guard
-        void retire(T* ptr)
-        {
+        void retire(T* ptr) {
             retire(&buffer_cast(ptr)->node);
         }
 
-        void deallocate(T* ptr)
-        {
-            auto buffer = buffer_cast(ptr);
-            allocator_traits_type::destroy(allocator_, buffer);
-            allocator_traits_type::deallocate(allocator_, buffer, 1);
+        void deallocate(T* ptr) {
+            deallocate(buffer_cast(ptr));
         }
     };
 }

@@ -152,7 +152,7 @@ namespace containers
         typename T,
         typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
-        typename InnerQueue = bounded_queue_bbq< T, 1 << 18 >
+        typename InnerQueue = bounded_queue_bbq< T, 1 << 16 >
     > class unbounded_blocked_queue
     {
         struct node
@@ -209,7 +209,7 @@ namespace containers
                             }
                             else
                             {
-                                allocator_.retire(n);
+                                allocator_.deallocate(n);
                             }
                         }
                         else
