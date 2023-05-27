@@ -27,7 +27,7 @@ namespace containers::detail
         {
             return id_;
         }
-
+    /*
         static size_t token()
         {
         #if defined(_WIN32)
@@ -36,7 +36,7 @@ namespace containers::detail
             return mix(reinterpret_cast<size_t>(&token_));
         #endif
         }
-        
+    */  
     private:
         static size_t mix(size_t value)
         {
@@ -90,8 +90,8 @@ namespace containers::detail
         alignas(64) static thread_local size_t id_;
     };
 
-    template< size_t N > std::array < std::atomic< uint64_t >, N > thread_manager< N >::thread_ids_;
-    template< size_t N > thread_local size_t thread_manager< N >::id_ = thread_manager< N >::register_thread();
+    template< size_t N > alignas(64) std::array < std::atomic< uint64_t >, N > thread_manager< N >::thread_ids_;
+    template< size_t N > alignas(64) thread_local size_t thread_manager< N >::id_ = thread_manager< N >::register_thread();
 
     using thread = thread_manager<>;
 }

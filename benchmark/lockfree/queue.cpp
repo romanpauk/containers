@@ -181,7 +181,7 @@ BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std:
 BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::shared_ptr<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 
 BENCHMARK_TEMPLATE(queue_push_pop_rand, stl_queue<std::vector<int>>)->ThreadRange(1, max_threads)->UseRealTime();
-BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::vector< int >, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
+BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::bounded_queue_bbq<std::vector<int>, 1024 * 64>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, containers::unbounded_blocked_queue<std::vector<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 BENCHMARK_TEMPLATE(queue_push_pop_rand, concurrent_queue<std::vector<int>>)->ThreadRange(1, max_threads)->UseRealTime();
 

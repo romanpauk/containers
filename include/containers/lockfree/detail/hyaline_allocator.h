@@ -38,7 +38,7 @@ namespace containers::detail
             };
         };
 
-        alignas(64) aligned< std::atomic< buffer* > > head_;
+        alignas(64) aligned< std::atomic< buffer* > > head_{};
         
         using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< buffer >;
         using allocator_traits_type = std::allocator_traits< allocator_type >;
@@ -69,9 +69,9 @@ namespace containers::detail
 
         void deallocate(T* ptr) {
             auto head = buffer_cast(ptr);
-            head->next = nullptr;
             Backoff backoff;
             while (true) {
+                head->next = head_.load();
                 if(head_.compare_exchange_weak(head->next, head))
                     break;
                 backoff();
@@ -221,7 +221,7 @@ namespace containers::detail
                 : value{ std::forward< Args >(args)... }
             {}
 
-            typename node_t node{};
+            node_t node{};
             T value;
         };
 
