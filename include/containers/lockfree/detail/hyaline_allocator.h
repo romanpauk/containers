@@ -22,6 +22,7 @@
 #include <algorithm>
 
 // TODO: not finished, just for perf testing
+// It is quite badly implemented single CAS hyaline version from the article.
 
 #define DEBUG_(...)
 //#define DEBUG_(...) fprintf(stderr, __VA_ARGS__)
@@ -133,7 +134,9 @@ namespace containers::detail
         }
 
     public:
-        free_list_allocator() {
+        using value_type = T;
+
+        ~free_list_allocator() {
             // TODO: In case it it static, we can't clear it
             for(auto& list: this->free_lists_)
                 list.clear(allocator_);
@@ -250,7 +253,7 @@ namespace containers::detail
 
                 auto n = node_lists_.allocate(1, id);
                 // TODO: construct node_list_t
-                // std::allocator_traits< free_list_allocator< node_list_t > >::construct(node_lists_[id], n);
+                // std::allocator_traits< free_list_allocator< node_list_t, N > >::construct(node_lists_, n, nullptr, id, node);
                 n->id = id;
                 n->next = nullptr;
                 n->node = node;
@@ -293,6 +296,8 @@ namespace containers::detail
             {}
 
             node_t node{};
+
+            // TODO: no need to construct T here, but we need to be able to destroy it after retire().
             T value;
         };
 
@@ -315,20 +320,23 @@ namespace containers::detail
         }
 
     public:
+        using value_type = T;
+
         template< typename U > struct rebind {
             using other = hyaline_allocator< U, typename std::allocator_traits< Allocator >::template rebind_alloc< U > >;
         };
 
-        hyaline_allocator() {};
-        template< typename U, typename AllocatorT > hyaline_allocator(hyaline_allocator< U, AllocatorT >&) {}
-
+        hyaline_allocator() = default;
+        hyaline_allocator(const hyaline_allocator&) = delete;
+        hyaline_allocator(hyaline_allocator&&) = delete;
+        
         // TODO: in some cases using token() is a bit faster (sometimes around 10%). On the other hand non-sequential
         // id requires DCAS later. For simplicity, try to finish this with id() and see.
         auto guard() { return guard_class(*this, ThreadManager::id()); }
 
-        template< typename... Args > T* allocate(Args&&... args) {
+        T* allocate(size_t n) {
+            assert(n == 1);
             auto ptr = allocator_traits_type::allocate(allocator_, 1);
-            allocator_traits_type::construct(allocator_, ptr, std::forward< Args >(args)...);
             return &ptr->value;
         }
 
@@ -341,7 +349,8 @@ namespace containers::detail
             retire(&buffer_cast(ptr)->node);
         }
 
-        void deallocate(T* ptr) {
+        void deallocate(T* ptr, size_t n) {
+            assert(n == 1);
             deallocate(buffer_cast(ptr));
         }
     };

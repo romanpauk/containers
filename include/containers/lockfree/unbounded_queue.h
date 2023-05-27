@@ -8,7 +8,6 @@
 #pragma once
 
 #include <containers/lockfree/detail/exponential_backoff.h>
-#include <containers/lockfree/detail/hazard_era_allocator.h>
 #include <containers/lockfree/detail/hyaline_allocator.h>
 #include <containers/lockfree/detail/optional.h>
 #include <containers/lockfree/bounded_queue_bbq.h>
@@ -24,7 +23,7 @@ namespace containers
     //
     template <
         typename T,
-        typename Allocator = detail::hazard_era_allocator< T >,
+        typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>
     > class unbounded_queue
     {
@@ -37,8 +36,9 @@ namespace containers
         };
 
         using allocator_type = typename Allocator::template rebind< node >::other;
-        allocator_type allocator_;
+        using allocator_traits_type = std::allocator_traits< allocator_type >;
 
+        allocator_type allocator_;
         alignas(64) std::atomic< node* > head_;
         alignas(64) std::atomic< node* > tail_;
 
@@ -48,7 +48,9 @@ namespace containers
         unbounded_queue(Allocator allocator = Allocator())
             : allocator_(allocator)
         {
-            auto n = allocator_.allocate();
+            auto n = allocator_traits_type::allocate(allocator_, 1);
+            allocator_traits_type::construct(allocator_, n);
+
             head_.store(n);
             tail_.store(n);
         }
@@ -61,11 +63,12 @@ namespace containers
         template< typename... Args > void emplace(Args&&... args)
         {
             auto guard = allocator_.guard();
-            auto n = allocator_.allocate(nullptr, T{std::forward< Args >(args)...});
+            auto n = allocator_traits_type::allocate(allocator_, 1);
+            allocator_traits_type::construct(allocator_, nullptr, T{std::forward< Args >(args)...});
+
             Backoff backoff;
             while (true)
             {
-                // TODO: could this benefit from protecting multiple variables in one call?
                 auto tail = allocator_.protect(tail_);
                 auto next = allocator_.protect(tail->next);
                 if (tail == tail_.load())
@@ -137,7 +140,8 @@ namespace containers
             while (head)
             {
                 auto next = head->next.load();
-                allocator_.deallocate(head);
+                allocator_traits_type::destroy(allocator_, head);
+                allocator_traits_type::deallocate(allocator_, head, 1);
                 head = next;
             }
         }
@@ -162,18 +166,20 @@ namespace containers
         };
 
         using allocator_type = typename Allocator::template rebind< node >::other;
-        mutable allocator_type allocator_;
+        using allocator_traits_type = std::allocator_traits< allocator_type >;
 
+        mutable allocator_type allocator_;
         alignas(64) std::atomic< node* > head_;
         alignas(64) std::atomic< node* > tail_;
 
     public:
         using value_type = T;
 
-        unbounded_blocked_queue(Allocator allocator = Allocator())
-            : allocator_(allocator)
+        unbounded_blocked_queue()
         {
-            auto n = allocator_.allocate();
+            auto n = allocator_traits_type::allocate(allocator_, 1);
+            allocator_traits_type::construct(allocator_, n);
+
             head_.store(n);
             tail_.store(n);
         }
@@ -202,14 +208,17 @@ namespace containers
                     {
                         if (next == nullptr)
                         {
-                            auto n = allocator_.allocate();
+                            auto n = allocator_traits_type::allocate(allocator_, 1);
+                            allocator_traits_type::construct(allocator_, n);
+
                             if (tail->next.compare_exchange_weak(next, n))
                             {
                                 tail_.compare_exchange_weak(tail, n);
                             }
                             else
                             {
-                                allocator_.deallocate(n);
+                                allocator_traits_type::destroy(allocator_, n);
+                                allocator_traits_type::deallocate(allocator_, n, 1);
                             }
                         }
                         else
@@ -284,7 +293,8 @@ namespace containers
             while (head)
             {
                 auto next = head->next.load();
-                allocator_.deallocate(head);
+                allocator_traits_type::destroy(allocator_, head);
+                allocator_traits_type::deallocate(allocator_, head, 1);
                 head = next;
             }
         }
