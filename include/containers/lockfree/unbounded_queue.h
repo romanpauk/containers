@@ -29,6 +29,11 @@ namespace containers
     {
         struct node
         {
+            node() = default;
+            node(node* n, T&& v)
+                : next(n), value(std::move(v))
+            {}
+
             ~node() { if constexpr (!detail::is_trivial_v< T >) value.reset(); }
 
             std::atomic< node* > next{};
@@ -45,8 +50,7 @@ namespace containers
     public:
         using value_type = T;
 
-        unbounded_queue(Allocator allocator = Allocator())
-            : allocator_(allocator)
+        unbounded_queue()
         {
             auto n = allocator_traits_type::allocate(allocator_, 1);
             allocator_traits_type::construct(allocator_, n);
@@ -64,7 +68,7 @@ namespace containers
         {
             auto guard = allocator_.guard();
             auto n = allocator_traits_type::allocate(allocator_, 1);
-            allocator_traits_type::construct(allocator_, nullptr, T{std::forward< Args >(args)...});
+            allocator_traits_type::construct(allocator_, n, nullptr, T{std::forward< Args >(args)...});
 
             Backoff backoff;
             while (true)
