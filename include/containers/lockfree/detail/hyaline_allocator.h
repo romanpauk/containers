@@ -135,7 +135,7 @@ namespace containers::detail
     public:
         free_list_allocator() {
             // TODO: In case it it static, we can't clear it
-            for(auto& list: free_lists_)
+            for(auto& list: this->free_lists_)
                 list.clear(allocator_);
         }
 
