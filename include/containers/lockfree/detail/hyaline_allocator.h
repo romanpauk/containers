@@ -28,8 +28,11 @@
 
 namespace containers::detail
 {
-    // TODO: this should just be freelist of buffers of some size, so they can be reused between different allocator instances
+    // TODO: should this just be a freelist of buffers of some concrete size, so they can be reused between different huyaline instances?
+    // TODO: the allocation/deallocation here is wrong, it does not destroy T properly. This class just should not know about T.
     template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > class free_list {
+        static constexpr int64_t MaxElements = 64;
+
         struct buffer {
             buffer(): value() {}
             union {
@@ -38,11 +41,12 @@ namespace containers::detail
             };
         };
 
-        alignas(64) aligned< std::atomic< buffer* > > head_{};
-        
+        std::atomic< buffer* > head_{};
+        std::atomic< int32_t > size_{};
+
         using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< buffer >;
         using allocator_traits_type = std::allocator_traits< allocator_type >;
-        alignas(64) allocator_type allocator_; // TODO: move out
+        allocator_type allocator_;
 
     public:
         ~free_list() {
@@ -52,14 +56,16 @@ namespace containers::detail
         T* allocate() {
             Backoff backoff;
             while (true) {
-                auto head = head_.load();
+                auto head = head_.load(std::memory_order_relaxed);
                 if (!head) {
-                    auto ptr = allocator_traits_type::allocate(allocator_, 1);
-                    allocator_traits_type::construct(allocator_, ptr);
-                    return &ptr->value;
+                    head = allocator_traits_type::allocate(allocator_, 1);
+                    allocator_traits_type::construct(allocator_, head);
+                    return &head->value;
                 }
 
                 if (head_.compare_exchange_weak(head, head->next)) {
+                    auto size = size_.fetch_sub(1, std::memory_order_relaxed);
+                    assert(size >= 0);
                     return &head->value;
                 }
 
@@ -69,11 +75,23 @@ namespace containers::detail
 
         void deallocate(T* ptr) {
             auto head = buffer_cast(ptr);
+
+            if (size_.load(std::memory_order_relaxed) > MaxElements) {
+                allocator_traits_type::destroy(allocator_, head);
+                allocator_traits_type::deallocate(allocator_, head, 1);
+
+                // TODO: as size is relaxed, the list could be a bit longer...
+                return;
+            }
+
             Backoff backoff;
             while (true) {
-                head->next = head_.load();
-                if(head_.compare_exchange_weak(head->next, head))
+                head->next = head_.load(std::memory_order_relaxed);
+                if(head_.compare_exchange_weak(head->next, head)) {
+                    auto size = size_.fetch_add(1, std::memory_order_relaxed);
+                    assert(size >= 0);
                     break;
+                }
                 backoff();
             }
         }
@@ -87,6 +105,7 @@ namespace containers::detail
             buffer* head = head_.load();
             while (head) {
                 buffer* next = head->next;
+                allocator_traits_type::destroy(allocator_, head);
                 allocator_traits_type::deallocate(allocator_, head, 1);
                 head = next;
             }
@@ -182,15 +201,17 @@ namespace containers::detail
             for (size_t i = 0; i < heads_.size(); ++i) {
                 head_t head{};
                 head_t new_head{};
+
+                auto n = node_lists_[id].allocate();
+                // TODO: construct node_list_t
+                n->id = id;
+                n->next = nullptr;
+                n->node = node;
+
                 do {
                     head = heads_[i];
                     if (head.get_ref() == 0)
                         goto next;
-
-                    auto n = node_lists_[id].allocate();
-                    n->id = id;
-                    n->next = nullptr;
-                    n->node = node;
         
                     new_head = head_t(n, head.get_ref());
                     n->next = head.get_ptr();
@@ -200,19 +221,22 @@ namespace containers::detail
                 ;
             }
 
-            // TODO: How is this supposed to work if it frees the node but not removes it from the list?
             adjust(node, inserts);
         }
 
         void adjust(node_t* node, int value) {
             if (node->ref.fetch_add(value) == -value) {
-                std::abort(); // TODO
+                // TODO: How is this supposed to work if it frees the node but not removes it from the list?
+                // Need to understand this case. For single CAS version, it should never deallocate here.
+                std::abort();
                 //free(node);
             }
         }
 
         void free(node_list_t* node) {
             deallocate(buffer_cast(node->node));
+
+            // TODO: destroy node_list_t
             node_lists_[node->id].deallocate(node);
         }
         
