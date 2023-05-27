@@ -28,86 +28,99 @@
 
 namespace containers::detail
 {
-    // TODO: should this just be a freelist of buffers of some concrete size, so they can be reused between different huyaline instances?
-    // TODO: the allocation/deallocation here is wrong, it does not destroy T properly. This class just should not know about T.
-    template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > class free_list {
-        static constexpr int64_t MaxElements = 64;
+    template< typename T, int64_t Size, typename Backoff > class free_list {
+        static_assert(std::is_trivial_v< T >);
 
-        struct buffer {
-            buffer(): value() {}
-            union {
-                T value;
-                buffer* next;
-            };
-        };
-
-        std::atomic< buffer* > head_{};
+        std::atomic< T* > head_{};
         std::atomic< int32_t > size_{};
-
-        using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< buffer >;
-        using allocator_traits_type = std::allocator_traits< allocator_type >;
-        allocator_type allocator_;
-
     public:
         ~free_list() {
-            clear();
+            assert(head_.load(std::memory_order_relaxed) == 0);
         }
         
-        T* allocate() {
+        T* pop() {
             Backoff backoff;
             while (true) {
                 auto head = head_.load(std::memory_order_relaxed);
-                if (!head) {
-                    head = allocator_traits_type::allocate(allocator_, 1);
-                    allocator_traits_type::construct(allocator_, head);
-                    return &head->value;
-                }
-
+                if (!head)
+                    return nullptr;
+                
                 if (head_.compare_exchange_weak(head, head->next)) {
                     auto size = size_.fetch_sub(1, std::memory_order_relaxed);
                     assert(size >= 0);
-                    return &head->value;
+                    return head;
                 }
 
                 backoff();
             }
         }
 
-        void deallocate(T* ptr) {
-            auto head = buffer_cast(ptr);
-
-            if (size_.load(std::memory_order_relaxed) > MaxElements) {
-                allocator_traits_type::destroy(allocator_, head);
-                allocator_traits_type::deallocate(allocator_, head, 1);
-
-                // TODO: as size is relaxed, the list could be a bit longer...
-                return;
-            }
-
+        bool push(T* head) {
+            if (size_.load(std::memory_order_relaxed) > Size)
+                return false;
+            
             Backoff backoff;
             while (true) {
                 head->next = head_.load(std::memory_order_relaxed);
                 if(head_.compare_exchange_weak(head->next, head)) {
                     auto size = size_.fetch_add(1, std::memory_order_relaxed);
                     assert(size >= 0);
-                    break;
+                    return true;
                 }
                 backoff();
             }
         }
 
-    private:
-        static buffer* buffer_cast(T* ptr) {
-            return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, value));
+        template< typename Allocator > void clear(Allocator& alloc) {
+            T* head = head_.load();
+            while (head) {
+                T* next = head->next;
+                std::allocator_traits< Allocator >::deallocate(alloc, head, 1);
+                head = next;
+            }
+        }
+    };
+
+    template< size_t Size, size_t Alignment > struct free_list_node {
+        union {
+            std::aligned_storage_t< Size, Alignment > data;
+            free_list_node< Size, Alignment >* next;
+        };
+    };
+
+    template< typename T, typename Backoff = detail::exponential_backoff<>, typename Allocator = std::allocator< T > > class free_list_allocator {
+        using node_type = free_list_node< sizeof(T), alignof(T) >;
+        
+        using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< node_type >;
+        using allocator_traits_type = std::allocator_traits< allocator_type >;
+
+        free_list< node_type, 64, Backoff > free_list_;
+        allocator_type allocator_;
+
+        static node_type* node_cast(T* ptr) {
+            return reinterpret_cast<node_type*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(node_type, data));
         }
 
-        void clear() {
-            buffer* head = head_.load();
-            while (head) {
-                buffer* next = head->next;
-                allocator_traits_type::destroy(allocator_, head);
-                allocator_traits_type::deallocate(allocator_, head, 1);
-                head = next;
+    public:
+        free_list_allocator() {
+            free_list_.clear(allocator_);
+        }
+
+        T* allocate(size_t n) {
+            assert(n == 1);
+            auto node = free_list_.pop();
+            if (!node) {
+                node = allocator_traits_type::allocate(allocator_, 1);
+            }
+
+            return reinterpret_cast< T* >(&node->data);
+        }
+
+        void deallocate(T* ptr, size_t n) {
+            assert(n == 1);
+            auto node = node_cast(ptr);
+            if (!free_list_.push(node)) {
+                allocator_traits_type::deallocate(allocator_, node, 1);
             }
         }
     };
@@ -128,14 +141,13 @@ namespace containers::detail
         };
 
         struct node_list_t {
-            node_list_t() = default;
             std::atomic< node_list_t* > next;
             size_t id;
             node_t* node;
         };
 
-        alignas(64) std::array< aligned< free_list< node_list_t > >, N > node_lists_;
-        
+        //static_assert(std::is_trivial_v< node_list_t >);
+
         struct head_t {
             head_t() = default;
             head_t(node_list_t* node, uint64_t ref) {
@@ -152,7 +164,8 @@ namespace containers::detail
             };
         };
 
-        alignas(64) std::array< detail::aligned< std::atomic< head_t > >, N > heads_;
+        alignas(64) std::array< aligned< free_list_allocator< node_list_t > >, N > node_lists_;
+        alignas(64) std::array< aligned< std::atomic< head_t > >, N > heads_;
 
         struct guard_class {
             guard_class(hyaline_allocator_type& allocator, size_t id)
@@ -202,8 +215,9 @@ namespace containers::detail
                 head_t head{};
                 head_t new_head{};
 
-                auto n = node_lists_[id].allocate();
+                auto n = node_lists_[id].allocate(1);
                 // TODO: construct node_list_t
+                // std::allocator_traits< free_list_allocator< node_list_t > >::construct(node_lists_[id], n);
                 n->id = id;
                 n->next = nullptr;
                 n->node = node;
@@ -237,7 +251,7 @@ namespace containers::detail
             deallocate(buffer_cast(node->node));
 
             // TODO: destroy node_list_t
-            node_lists_[node->id].deallocate(node);
+            node_lists_[node->id].deallocate(node, 1);
         }
         
         struct buffer {
