@@ -18,7 +18,7 @@ static size_t gettid() { return GetCurrentThreadId(); }
 
 namespace containers::detail
 {
-    template< size_t N = 1024 > class thread_manager
+    template< size_t N = 32 > class thread_manager
     {
     public:
         static const int max_threads = N;
