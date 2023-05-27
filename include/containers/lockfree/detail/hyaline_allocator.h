@@ -28,6 +28,7 @@
 
 namespace containers::detail
 {
+    // TODO: this is a mpsc bounded queue...
     template< typename T, int64_t Size, typename Backoff > class free_list {
         static_assert(std::is_trivial_v< T >);
 
