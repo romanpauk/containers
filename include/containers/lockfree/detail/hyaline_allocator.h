@@ -87,7 +87,7 @@ namespace containers::detail
 #if 0
     template< typename T, int64_t Size, typename Backoff > class free_list_queue {
         static_assert(std::is_trivial_v< T >);
-        bounded_queue< T*, Size > queue_;
+        bounded_queue_bbq< T*, Size > queue_;
 
     public:
         T* pop() {
@@ -206,7 +206,7 @@ namespace containers::detail
         struct guard_class {
             guard_class(hyaline_allocator_type& allocator, size_t id)
                 : allocator_(allocator)
-                , id_(id & (allocator.heads_.size() - 1))
+                , id_(id & (N - 1))
                 , end_(allocator.enter(id_)) {}
 
             ~guard_class() { allocator_.leave(id_, end_); }
@@ -291,14 +291,8 @@ namespace containers::detail
         }
         
         struct buffer {
-            template< typename... Args > buffer(Args&&... args)
-                : value{ std::forward< Args >(args)... }
-            {}
-
             node_t node{};
-
-            // TODO: no need to construct T here, but we need to be able to destroy it after retire().
-            T value;
+            std::aligned_storage_t< sizeof(T), alignof(T) > data;
         };
 
         using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc< buffer >;
@@ -307,7 +301,7 @@ namespace containers::detail
         allocator_type allocator_;
 
         static buffer* buffer_cast(T* ptr) {
-            return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, value));
+            return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - offsetof(buffer, data));
         }
 
         static buffer* buffer_cast(node_t* ptr) {
@@ -315,6 +309,7 @@ namespace containers::detail
         }
 
         void deallocate(buffer* ptr) {
+            reinterpret_cast<T*>(&ptr->data)->~T();
             allocator_traits_type::destroy(allocator_, ptr);
             allocator_traits_type::deallocate(allocator_, ptr, 1);
         }
@@ -337,7 +332,7 @@ namespace containers::detail
         T* allocate(size_t n) {
             assert(n == 1);
             auto ptr = allocator_traits_type::allocate(allocator_, 1);
-            return &ptr->value;
+            return reinterpret_cast< T* >(&ptr->data);
         }
 
         T* protect(const std::atomic< T* >& value, std::memory_order order = std::memory_order_seq_cst) {
