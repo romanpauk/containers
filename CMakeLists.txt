@@ -20,7 +20,7 @@ if(CONTAINERS_ENABLE_TESTING)
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG main)
 
-    if(WIN32)
+    if(MSVC)
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     endif()
 
@@ -77,6 +77,9 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         $<$<PLATFORM_ID:Linux>:atomic>
     )
     target_include_directories(containers_benchmark PRIVATE benchmark)
+    if(MSVC)
+        target_compile_definitions(containers_benchmark PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
+    endif()
 endif()
 
 if(CONTAINERS_ENABLE_TESTING)
@@ -93,4 +96,7 @@ if(CONTAINERS_ENABLE_TESTING)
         $<$<PLATFORM_ID:Linux>:atomic>
     )
     target_include_directories(containers_test PRIVATE test)
+    if(MSVC)
+        target_compile_definitions(containers_test PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
+    endif()
 endif()
