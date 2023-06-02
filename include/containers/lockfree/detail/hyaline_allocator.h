@@ -219,14 +219,12 @@ namespace containers::detail
         };
 
         node_list_t* enter(size_t id) {
-            heads_[id].store({ nullptr, 1 }, std::memory_order_relaxed);
+            heads_[id].store({ nullptr, 1 }, std::memory_order_release);
             return nullptr;
         }
 
         void leave(size_t id, node_list_t* node) {
-            std::atomic_thread_fence(std::memory_order_acquire); // Synchronize with retire().
-
-            auto head = heads_[id].exchange({ nullptr, 0 }, std::memory_order_relaxed);
+            auto head = heads_[id].exchange({ nullptr, 0 }, std::memory_order_acq_rel); // synchronize with retire()
             if (head.get_ptr() != nullptr)
                 traverse(head.get_ptr(), node);
         }
@@ -249,8 +247,6 @@ namespace containers::detail
             int inserts = 0;
             node->ref = 0;
             
-            std::atomic_thread_fence(std::memory_order_acquire); // Synchronize with enter().
-
             auto id = thread::id();
             for (size_t i = 0; i < heads_.size(); ++i) {
                 head_t head{};
@@ -264,13 +260,13 @@ namespace containers::detail
                 n->node = node;
 
                 do {
-                    head = heads_[i].load(std::memory_order_relaxed);
+                    head = heads_[i].load(std::memory_order_acquire); // synchronize with enter()
                     if (head.get_ref() == 0)
                         goto next;
         
                     new_head = head_t(n, head.get_ref());
                     n->next = head.get_ptr();
-                } while (!heads_[i].compare_exchange_strong(head, new_head, std::memory_order_relaxed));
+                } while (!heads_[i].compare_exchange_strong(head, new_head, std::memory_order_acq_rel)); // synchronize with leave()
                 ++inserts;
             next:
                 ;
