@@ -24,20 +24,18 @@ namespace containers::detail {
         }
 
         uint64_t spin() {
-            if (!jitter_) {
-                jitter_ = (uint64_t)this;
-                jitter_ ^= jitter_ >> 17;
-            }
+            auto jitter = (uint64_t)this;
+            jitter ^= jitter >> 17;
+
             auto state = state_;
             if (state_ < Max)
                 state_ <<= 1;
-            return (uint64_t)jitter_ & (state - 1);
+            return (uint64_t)jitter & (state - 1);
         }
 
         uint64_t state() const { return state_; }
 
     private:
-        uint64_t jitter_;
         uint64_t state_ = Initial;
     };
 }

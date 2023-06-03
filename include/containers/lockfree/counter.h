@@ -23,20 +23,20 @@
 namespace containers {
     template< typename T, size_t N > struct counter {
         void inc(T value, size_t index) { 
-            values_[index].value += value;
+            values_[index].v += value;
         }
 
         T get() {
             _mm_mfence();
             T result = 0;
             for(auto& value: values_) 
-                result += value.value;
+                result += value.v;
             return result;
         }
 
     private:
         struct value {
-            T value{};
+            T v{};
         };
         std::array< detail::aligned< value >, N > values_{}; 
     };
