@@ -32,18 +32,36 @@ namespace containers {
         };
 
         struct list {
-            const node* head_ = nullptr;
-            const node* tail_ = nullptr;
+            struct iterator {
+                iterator(const node* n) : node_(n) {}
 
-            const node* begin() const {
+                const std::pair<const Key, Value>& operator*() { assert(node_); return node_->value; }
+                const std::pair<const Key, Value>* operator->() { assert(node_); return &node_->value; }
+
+                bool operator == (const iterator& other) const { return node_ == other.node_; }
+                bool operator != (const iterator& other) const { return node_ != other.node_; }
+
+                iterator& operator++() { assert(node_); node_ = node_->next; return *this; }
+                iterator operator++(int) { assert(node_); const node* n = node_; node_ = node_->next; return n; }
+
+            private:
+                template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
+                typename const node* node_;
+            };
+
+            iterator begin() const {
                 assert(!head_ || !head_->prev);
                 return head_;
             }
 
-            const node* end() const {
+            iterator end() const {
                 assert(!tail_ || !tail_->next);
                 return nullptr;
             }
+
+        private:
+            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
+
 /*
             void push_front(const node& n) {
                 if (head_) {
@@ -73,7 +91,7 @@ namespace containers {
                 }
             }
             
-            void erase(const node& n) {
+            const node* erase(const node& n) {
                 if (n.next) {
                     n.next->prev = n.prev;
                 } else {
@@ -87,6 +105,8 @@ namespace containers {
                     assert(head_ == &n);
                     head_ = n.next;;
                 }
+
+                return n.next;
             }
 
             const node& front() const {
@@ -100,6 +120,9 @@ namespace containers {
             }
 
             void clear() { head_ = tail_ = nullptr; }
+
+            const node* head_ = nullptr;
+            const node* tail_ = nullptr;
         };
 
         using values_type = std::unordered_set< node, hash >;
@@ -123,23 +146,6 @@ namespace containers {
         private:
             template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
             typename values_type::iterator it_;
-        };
-
-        struct evictable_iterator {
-            evictable_iterator(const node* n) : node_(n) {}
-
-            const std::pair<const Key, Value>& operator*() { return node_->value; }
-            const std::pair<const Key, Value>* operator->() { return &node_->value; }
-
-            bool operator == (const evictable_iterator& other) const { return node_ == other.node_; }
-            bool operator != (const evictable_iterator& other) const { return node_ != other.node_; }
-
-            evictable_iterator& operator++() { node_ = node_->next; return *this; }
-            evictable_iterator operator++(int) { const node* n = node_; node_ = node_->next; return n; }
-
-        private:
-            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
-            typename const node* node_;
         };
 
         iterator begin() { return values_.begin(); }
@@ -174,9 +180,9 @@ namespace containers {
             }
         }
 
-        void erase(const iterator& it) {
+        iterator erase(const iterator& it) {
             list_.erase(*it.it_);
-            values_.erase(it.it_);
+            return values_.erase(it.it_);
         }
 
         void clear() {
@@ -199,18 +205,13 @@ namespace containers {
             if (it != end()) touch(it);
         }
 
-        evictable_iterator evictable_begin() { return list_.begin(); }
-        evictable_iterator evictable_end() { return list_.end(); }
-
-        void erase(const evictable_iterator& it) {
-            assert(it != evictable_end());
-            list_.erase(*it.node_);
+        const list& evictables() { return list_; }
+        
+        typename list::iterator erase(const typename list::iterator& it) {
+            assert(it != list_.end());
+            const node* n = list_.erase(*it.node_);
             values_.erase(*it.node_);
-        }
-
-    private:
-        template< bool Update > iterator find_impl(const Key& key) {
-            
+            return n;
         }
     };
 }
