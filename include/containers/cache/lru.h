@@ -44,7 +44,23 @@ namespace containers {
                 assert(!tail_ || !tail_->next);
                 return nullptr;
             }
-
+/*
+            void push_front(const node& n) {
+                if (head_) {
+                    assert(!head_->prev);
+                    assert(tail_);
+                    assert(!tail_->next);
+                    n.prev = nullptr;
+                    n.next = head_;
+                    head_->prev = &n;
+                    head_ = &n;
+                } else {
+                    assert(!tail_);
+                    head_ = tail_ = &n;
+                    n.prev = n.next = nullptr;
+                }
+            }
+*/
             void push_back(const node& n) {
                 if (!tail_) {
                     assert(!head_);
@@ -142,7 +158,8 @@ namespace containers {
         }
 
         iterator find(const Key& key) {
-            return find_impl<false>(key);
+            // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
+            return values_.find({ {key, Value()} });
         }
 
         Value& operator[](const Key& key) {
@@ -150,7 +167,7 @@ namespace containers {
         }
 
         void erase(const Key& key) {
-            auto it = find_impl<false>(key);
+            auto it = find(key);
             if (it != values_.end()) {
                 list_.erase(it->second);
                 values_.erase(it);
@@ -178,7 +195,7 @@ namespace containers {
         }
 
         void touch(const Key& key) {
-            auto it = find_impl<false>(key);
+            auto it = find(key);
             if (it != end()) touch(it);
         }
 
@@ -193,19 +210,7 @@ namespace containers {
 
     private:
         template< bool Update > iterator find_impl(const Key& key) {
-            // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
-            // Some union with key& or whole pair...
-            auto it = values_.find({ {key, Value()} });
-            if constexpr (Update) {
-                if (it != values_.end()) {
-                    const auto& n = *it;
-                    if (list_.back() != n) {
-                        list_.erase(n);
-                        list_.push_back(n);
-                    }
-                }
-            }
-            return it;
+            
         }
     };
 }
