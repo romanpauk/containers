@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 
+#include <cassert>
 #include <optional>
 #include <unordered_set>
 
@@ -22,25 +23,53 @@ namespace containers {
             size_t operator()(const node& n) const noexcept { return std::hash<Key>()(n.value.first); }
         };
 
-        struct node_list {
+        struct list {
             const node* head_ = nullptr;
             const node* tail_ = nullptr;
 
+            const node* front() const {
+                assert(!head_ || !head_->prev);
+                return head_;
+            }
+
             void push_front(const node* n) {
+                assert(n);
                 if (head_) {
+                    assert(!head_->prev);
+                    assert(tail_);
+                    assert(!tail_->next);
+                    n->prev = nullptr;
                     n->next = head_;
                     head_->prev = n;
                     head_ = n;
                 } else {
+                    assert(!tail_);
                     head_ = tail_ = n;
+                    n->prev = n->next = nullptr;
                 }
             }
 
             void erase(const node* n) {
-                if (n->next)
+                assert(n);
+                if (n->next) {
                     n->next->prev = n->prev;
-                if (n->prev)
+                } else {
+                    assert(tail_ == n);
+                    tail_ = n->prev;
+                }
+
+                if (n->prev) {
                     n->prev->next = n->next;
+                } else {
+                    assert(head_ == n);
+                    assert(!tail_);
+                    head_ = nullptr;
+                }
+            }
+
+            const node* back() const {
+                assert(!tail_ || !tail_->next);
+                return tail_;
             }
 
             const node* pop_back() {
@@ -50,6 +79,7 @@ namespace containers {
                     if (tail_) {
                         tail_->next = nullptr;
                     } else {
+                        assert(!tail_);
                         head_ = nullptr;
                     }
                 }
@@ -62,7 +92,7 @@ namespace containers {
         using values_type = std::unordered_set< node, hash >;
 
         values_type values_;
-        node_list list_;
+        list list_;
 
     public:
         struct iterator {
@@ -71,25 +101,31 @@ namespace containers {
             const std::pair<const Key, Value>& operator*() { return it_->value; }
             const std::pair<const Key, Value>* operator->() { return &it_->value; }
 
-            bool operator == (const iterator& other) { return it_ == other.it_; }
-            bool operator != (const iterator& other) { return it_ != other.it_; }
+            bool operator == (const iterator& other) const { return it_ == other.it_; }
+            bool operator != (const iterator& other) const { return it_ != other.it_; }
 
             iterator& operator++() { return ++it_; }
             iterator operator++(int) { typename values_type::iterator it = it_; ++it_; return it; }
+
         private:
+            template< typename Key, typename Value > friend class lru_unordered_map;
             typename values_type::iterator it_;
         };
 
+        // TODO: what iterator operations should change evictability?
+        // Intuitivelly find yes, iteration no... but it would be better all or none.
         iterator begin() { return values_.begin(); }
         iterator end() { return values_.end(); }
 
         template<typename... Args> std::pair<iterator, bool> emplace(Args&&... args) {
             auto it = values_.emplace(node{{std::forward<Args>(args)...}});
             const node* n = &*it.first;
-            if (!it.second) {
+            if (it.second) {
+                list_.push_front(n);
+            } else if (n != list_.front()) {
                 list_.erase(n);
+                list_.push_front(n);
             }
-            list_.push_front(n);
             return {it.first, it.second};
         }
 
@@ -109,6 +145,11 @@ namespace containers {
             }
         }
 
+        void erase(iterator it) {
+            list_.erase(&*it.it_);
+            values_.erase(it.it_);
+        }
+
         void clear() {
             values_.clear();
             list_.clear();
@@ -117,15 +158,9 @@ namespace containers {
         size_t size() const { return values_.size(); }
         bool empty() const { return values_.empty(); }
 
-        // TODO: perhaps return a reverse_iterator?
-        std::optional<std::pair<const Key, Value>> evict() {
-            std::optional<std::pair<const Key, Value>> result;
-            auto* n = list_.pop_back();
-            if (n) {
-                result.emplace(std::move(n->value));
-                values_.erase(*n);                
-            }
-            return result;
+        iterator evictable() {
+            auto* n = list_.back();
+            return n ? values_.find(*n) : end();
         }
 
     private:
@@ -134,9 +169,11 @@ namespace containers {
             auto it = values_.find({ {key, Value()} });
             if constexpr (Update) {
                 if (it != values_.end()) {
-                    // TODO: repeatedly finding the same element
-                    list_.erase(&*it);
-                    list_.push_front(&*it);
+                    auto* n = &*it;
+                    if (list_.front() != n) {
+                        list_.erase(n);
+                        list_.push_front(n);
+                    }
                 }
             }
             return it;
