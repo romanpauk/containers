@@ -88,5 +88,9 @@ namespace containers
         }
 
         static constexpr size_t capacity() { return Size; }
+
+        // TODO: does not belong here
+        bool invalidate_push() { return true; }
+        bool invalidate_pop() { return true; }
     };
 }

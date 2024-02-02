@@ -467,6 +467,7 @@ namespace containers
             return false;
         }
 
+        // TODO: does not belong here
         bool invalidate_push() { return true; }
         bool invalidate_pop() { return true; }
     };
@@ -556,6 +557,8 @@ namespace containers
 
         // Note: those are not named by what they invalidate, but from where they need
         // to be called
+
+        // transition: empty -> filled
         bool invalidate_push()
         {
             auto head = cursor(phead_.load(std::memory_order_relaxed));
@@ -571,6 +574,7 @@ namespace containers
             return cursor(current).version == -1;
         }
 
+        // transition: filled -> depleted
         bool invalidate_pop()
         {
             auto head = cursor(phead_.load(std::memory_order_relaxed));

@@ -156,8 +156,9 @@ namespace containers
         typename T,
         typename Allocator = detail::hyaline_allocator< T >,
         typename Backoff = detail::exponential_backoff<>,
-        typename InnerQueue = bounded_queue_bbq< T, 1 << 16, true >
+        //typename InnerQueue = bounded_queue_bbq< T, 1 << 16, true >
         //typename InnerQueue = bounded_queue_bbq_block< T, 1 << 16 >
+        typename InnerQueue = bounded_queue< T, 1 << 16 >
     > class unbounded_blocked_queue
     {
         struct node
