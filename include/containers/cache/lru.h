@@ -45,8 +45,8 @@ namespace containers {
                 iterator operator++(int) { assert(node_); const node* n = node_; node_ = node_->next; return n; }
 
             private:
-                template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
-                typename const node* node_;
+                template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT > friend class lru_unordered_map;
+                const node* node_;
             };
 
             iterator begin() const {
@@ -60,7 +60,7 @@ namespace containers {
             }
 
         private:
-            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
+            template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT > friend class lru_unordered_map;
 
 /*
             void push_front(const node& n) {
@@ -144,7 +144,7 @@ namespace containers {
             iterator operator++(int) { typename values_type::iterator it = it_; ++it_; return it; }
 
         private:
-            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
+            template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT > friend class lru_unordered_map;
             typename values_type::iterator it_;
         };
 
