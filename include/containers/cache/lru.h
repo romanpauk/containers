@@ -6,22 +6,27 @@
 //
 
 #include <optional>
-#include <unordered_map>
+#include <unordered_set>
 
 namespace containers {
     template< typename Key, typename Value > class lru_unordered_map {
         struct node {
-            Value value;
-            const Key* key;
-            node* next;
-            node* prev;
+            bool operator == (const node& n) const noexcept { return pair.first == n.pair.first; }
+
+            std::pair<const Key, Value> pair;
+            mutable const node* next;
+            mutable const node* prev;
+        };
+
+        struct hash {
+            size_t operator()(const node& n) const noexcept { return std::hash<Key>()(n.pair.first); }
         };
 
         struct node_list {
-            node* head_ = nullptr;
-            node* tail_ = nullptr;
+            const node* head_ = nullptr;
+            const node* tail_ = nullptr;
 
-            void push_front(node* n) {
+            void push_front(const node* n) {
                 if (head_) {
                     n->next = head_;
                     head_->prev = n;
@@ -31,15 +36,15 @@ namespace containers {
                 }
             }
 
-            void erase(node* n) {
+            void erase(const node* n) {
                 if (n->next)
                     n->next->prev = n->prev;
                 if (n->prev)
                     n->prev->next = n->next;
             }
 
-            node* pop_back() {
-                node* n = tail_;
+            const node* pop_back() {
+                const node* n = tail_;
                 if (tail_) {
                     tail_ = tail_->prev;
                     if (tail_) {
@@ -54,7 +59,7 @@ namespace containers {
             void clear() { head_ = tail_ = nullptr; }
         };
 
-        using values_type = std::unordered_map< Key, node >;
+        using values_type = std::unordered_set< node, hash >;
 
         values_type values_;
         node_list list_;
@@ -63,11 +68,14 @@ namespace containers {
         struct iterator {
             iterator(typename values_type::iterator it): it_(it) {}
 
-            std::pair<const Key&, Value&> operator*() {
-                //return *reinterpret_cast<std::pair<const Key, Value>*>(&*it_);
-                return {it_->first, it_->second.value};
-            }
+            const std::pair<const Key, Value>& operator*() { return it_->pair; }
+            const std::pair<const Key, Value>* operator->() { return &it_->pair; }
 
+            bool operator == (const iterator& other) { return it_ == other.it_; }
+            bool operator != (const iterator& other) { return it_ != other.it_; }
+
+            iterator& operator++() { return ++it_; }
+            iterator operator++(int) { typename values_type::iterator it = it_; ++it_; return it; }
         private:
             typename values_type::iterator it_;
         };
@@ -75,24 +83,19 @@ namespace containers {
         iterator begin() { return values_.begin(); }
         iterator end() { return values_.end(); }
 
-        void emplace(Key k, Value v) {
-            auto it = values_.emplace(k, node{v});
-            auto* n = &it.first->second;
-            if (it.second) {
-                n->key = &it.first->first;
-            } else {
+        template<typename... Args> std::pair<iterator, bool> emplace(Args&&... args) {
+            auto it = values_.emplace(node{{std::forward<Args>(args)...}});
+            const node* n = &*it.first;
+            if (!it.second) {
                 list_.erase(n);
             }
             list_.push_front(n);
+            return {it.first, it.second};
         }
 
-        Value& get(Key k) {
-            auto it = values_.find(k);
-            if (it != values_.end()) {
-                auto* n = &it->second;
-                list_.erase(n);
-                list_.push_front(n);
-            }
+        iterator find(const Key& key) {
+            // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
+            return values_.find({{key, Value()}});
         }
 
         void clear() {
@@ -107,9 +110,8 @@ namespace containers {
             std::optional<std::pair<const Key, Value>> result;
             auto* n = list_.pop_back();
             if (n) {
-                auto it = values_.find(*n->key);
-                result.emplace(std::make_pair(std::move(it->first), std::move(it->second.value)));
-                values_.erase(it);                
+                result.emplace(std::move(n->pair));
+                values_.erase(*n);                
             }
             return result;
         }
