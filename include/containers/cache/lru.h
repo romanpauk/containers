@@ -11,15 +11,15 @@
 namespace containers {
     template< typename Key, typename Value > class lru_unordered_map {
         struct node {
-            bool operator == (const node& n) const noexcept { return pair.first == n.pair.first; }
+            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
 
-            std::pair<const Key, Value> pair;
+            std::pair<const Key, Value> value;
             mutable const node* next;
             mutable const node* prev;
         };
 
         struct hash {
-            size_t operator()(const node& n) const noexcept { return std::hash<Key>()(n.pair.first); }
+            size_t operator()(const node& n) const noexcept { return std::hash<Key>()(n.value.first); }
         };
 
         struct node_list {
@@ -68,8 +68,8 @@ namespace containers {
         struct iterator {
             iterator(typename values_type::iterator it): it_(it) {}
 
-            const std::pair<const Key, Value>& operator*() { return it_->pair; }
-            const std::pair<const Key, Value>* operator->() { return &it_->pair; }
+            const std::pair<const Key, Value>& operator*() { return it_->value; }
+            const std::pair<const Key, Value>* operator->() { return &it_->value; }
 
             bool operator == (const iterator& other) { return it_ == other.it_; }
             bool operator != (const iterator& other) { return it_ != other.it_; }
@@ -97,6 +97,10 @@ namespace containers {
             return find_impl<true>(key);
         }
 
+        Value& operator[](const Key& key) {
+            return const_cast<Value&>(emplace(key, Value()).first->second);
+        }
+
         void erase(const Key& key) {
             auto it = find_impl<false>(key);
             if (it != values_.end()) {
@@ -118,7 +122,7 @@ namespace containers {
             std::optional<std::pair<const Key, Value>> result;
             auto* n = list_.pop_back();
             if (n) {
-                result.emplace(std::move(n->pair));
+                result.emplace(std::move(n->value));
                 values_.erase(*n);                
             }
             return result;
