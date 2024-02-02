@@ -32,36 +32,34 @@ namespace containers {
                 return head_;
             }
 
-            void push_front(const node* n) {
-                assert(n);
+            void push_front(const node& n) {
                 if (head_) {
                     assert(!head_->prev);
                     assert(tail_);
                     assert(!tail_->next);
-                    n->prev = nullptr;
-                    n->next = head_;
-                    head_->prev = n;
-                    head_ = n;
+                    n.prev = nullptr;
+                    n.next = head_;
+                    head_->prev = &n;
+                    head_ = &n;
                 } else {
                     assert(!tail_);
-                    head_ = tail_ = n;
-                    n->prev = n->next = nullptr;
+                    head_ = tail_ = &n;
+                    n.prev = n.next = nullptr;
                 }
             }
 
-            void erase(const node* n) {
-                assert(n);
-                if (n->next) {
-                    n->next->prev = n->prev;
+            void erase(const node& n) {
+                if (n.next) {
+                    n.next->prev = n.prev;
                 } else {
-                    assert(tail_ == n);
-                    tail_ = n->prev;
+                    assert(tail_ == &n);
+                    tail_ = n.prev;
                 }
 
-                if (n->prev) {
-                    n->prev->next = n->next;
+                if (n.prev) {
+                    n.prev->next = n.next;
                 } else {
-                    assert(head_ == n);
+                    assert(head_ == &n);
                     assert(!tail_);
                     head_ = nullptr;
                 }
@@ -119,10 +117,10 @@ namespace containers {
 
         template<typename... Args> std::pair<iterator, bool> emplace(Args&&... args) {
             auto it = values_.emplace(node{{std::forward<Args>(args)...}});
-            const node* n = &*it.first;
+            const node& n = *it.first;
             if (it.second) {
                 list_.push_front(n);
-            } else if (n != list_.front()) {
+            } else if (&n != list_.front()) {
                 list_.erase(n);
                 list_.push_front(n);
             }
@@ -140,13 +138,13 @@ namespace containers {
         void erase(const Key& key) {
             auto it = find_impl<false>(key);
             if (it != values_.end()) {
-                list_.erase(&it->second);
+                list_.erase(it->second);
                 values_.erase(it);
             }
         }
 
         void erase(iterator it) {
-            list_.erase(&*it.it_);
+            list_.erase(*it.it_);
             values_.erase(it.it_);
         }
 
@@ -158,6 +156,14 @@ namespace containers {
         size_t size() const { return values_.size(); }
         bool empty() const { return values_.empty(); }
 
+        void touch(const iterator& it) {
+            assert(it != end());
+            auto& n = *it.it_;
+            list_.erase(n);
+            list_.push_front(n);
+        }
+
+        // TODO: just need to iterate in eviction order and clients can do whatever they need
         iterator evictable() {
             auto* n = list_.back();
             return n ? values_.find(*n) : end();
@@ -169,8 +175,8 @@ namespace containers {
             auto it = values_.find({ {key, Value()} });
             if constexpr (Update) {
                 if (it != values_.end()) {
-                    auto* n = &*it;
-                    if (list_.front() != n) {
+                    const auto& n = *it;
+                    if (list_.front() != &n) {
                         list_.erase(n);
                         list_.push_front(n);
                     }
