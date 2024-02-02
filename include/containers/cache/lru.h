@@ -10,9 +10,17 @@
 #include <unordered_set>
 
 namespace containers {
-    template< typename Key, typename Value, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<Key>, typename Allocator = std::allocator< std::pair<const Key, Value > > > class lru_unordered_map {
+    template<
+        typename Key,
+        typename Value,
+        typename Hash = std::hash<Key>,
+        typename KeyEqual = std::equal_to<Key>,
+        typename Allocator = std::allocator< std::pair<const Key, Value > >
+    > class lru_unordered_map
+    {
         struct node {
             bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
+            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
 
             std::pair<const Key, Value> value;
             mutable const node* next;
@@ -27,27 +35,28 @@ namespace containers {
             const node* head_ = nullptr;
             const node* tail_ = nullptr;
 
-            const node* front() const {
+            const node* begin() const {
                 assert(!head_ || !head_->prev);
                 return head_;
             }
 
-            void push_front(const node& n) {
-                if (head_) {
-                    assert(!head_->prev);
-                    assert(tail_);
-                    assert(!tail_->next);
-                    n.prev = nullptr;
-                    n.next = head_;
-                    head_->prev = &n;
-                    head_ = &n;
-                } else {
-                    assert(!tail_);
-                    head_ = tail_ = &n;
-                    n.prev = n.next = nullptr;
-                }
+            const node* end() const {
+                assert(!tail_ || !tail_->next);
+                return nullptr;
             }
 
+            void push_back(const node& n) {
+                if (!tail_) {
+                    assert(!head_);
+                    tail_ = head_ = &n;
+                } else {
+                    n.next = nullptr;
+                    n.prev = tail_;
+                    tail_->next = &n;
+                    tail_ = &n;
+                }
+            }
+            
             void erase(const node& n) {
                 if (n.next) {
                     n.next->prev = n.prev;
@@ -60,28 +69,18 @@ namespace containers {
                     n.prev->next = n.next;
                 } else {
                     assert(head_ == &n);
-                    assert(!tail_);
-                    head_ = nullptr;
+                    head_ = n.next;;
                 }
             }
 
-            const node* back() const {
-                assert(!tail_ || !tail_->next);
-                return tail_;
+            const node& front() const {
+                assert(head_);
+                return *head_;
             }
 
-            const node* pop_back() {
-                const node* n = tail_;
-                if (tail_) {
-                    tail_ = tail_->prev;
-                    if (tail_) {
-                        tail_->next = nullptr;
-                    } else {
-                        assert(!tail_);
-                        head_ = nullptr;
-                    }
-                }
-                return n;
+            const node& back() const {
+                assert(tail_);
+                return *tail_;
             }
 
             void clear() { head_ = tail_ = nullptr; }
@@ -110,8 +109,23 @@ namespace containers {
             typename values_type::iterator it_;
         };
 
-        // TODO: what iterator operations should change evictability?
-        // Intuitivelly find yes, iteration no... but it would be better all or none.
+        struct evictable_iterator {
+            evictable_iterator(const node* n) : node_(n) {}
+
+            const std::pair<const Key, Value>& operator*() { return node_->value; }
+            const std::pair<const Key, Value>* operator->() { return &node_->value; }
+
+            bool operator == (const evictable_iterator& other) const { return node_ == other.node_; }
+            bool operator != (const evictable_iterator& other) const { return node_ != other.node_; }
+
+            evictable_iterator& operator++() { node_ = node_->next; return *this; }
+            evictable_iterator operator++(int) { const node* n = node_; node_ = node_->next; return n; }
+
+        private:
+            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
+            typename const node* node_;
+        };
+
         iterator begin() { return values_.begin(); }
         iterator end() { return values_.end(); }
 
@@ -119,16 +133,16 @@ namespace containers {
             auto it = values_.emplace(node{{std::forward<Args>(args)...}});
             const node& n = *it.first;
             if (it.second) {
-                list_.push_front(n);
-            } else if (&n != list_.front()) {
+                list_.push_back(n);
+            } else if (n != list_.back()) {
                 list_.erase(n);
-                list_.push_front(n);
+                list_.push_back(n);
             }
             return {it.first, it.second};
         }
 
         iterator find(const Key& key) {
-            return find_impl<true>(key);
+            return find_impl<false>(key);
         }
 
         Value& operator[](const Key& key) {
@@ -143,7 +157,7 @@ namespace containers {
             }
         }
 
-        void erase(iterator it) {
+        void erase(const iterator& it) {
             list_.erase(*it.it_);
             values_.erase(it.it_);
         }
@@ -160,25 +174,34 @@ namespace containers {
             assert(it != end());
             auto& n = *it.it_;
             list_.erase(n);
-            list_.push_front(n);
+            list_.push_back(n);
         }
 
-        // TODO: just need to iterate in eviction order and clients can do whatever they need
-        iterator evictable() {
-            auto* n = list_.back();
-            return n ? values_.find(*n) : end();
+        void touch(const Key& key) {
+            auto it = find_impl<false>(key);
+            if (it != end()) touch(it);
+        }
+
+        evictable_iterator evictable_begin() { return list_.begin(); }
+        evictable_iterator evictable_end() { return list_.end(); }
+
+        void erase(const evictable_iterator& it) {
+            assert(it != evictable_end());
+            list_.erase(*it.node_);
+            values_.erase(*it.node_);
         }
 
     private:
         template< bool Update > iterator find_impl(const Key& key) {
             // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
+            // Some union with key& or whole pair...
             auto it = values_.find({ {key, Value()} });
             if constexpr (Update) {
                 if (it != values_.end()) {
                     const auto& n = *it;
-                    if (list_.front() != &n) {
+                    if (list_.back() != n) {
                         list_.erase(n);
-                        list_.push_front(n);
+                        list_.push_back(n);
                     }
                 }
             }
