@@ -94,8 +94,15 @@ namespace containers {
         }
 
         iterator find(const Key& key) {
-            // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
-            return values_.find({{key, Value()}});
+            return find_impl<true>(key);
+        }
+
+        void erase(const Key& key) {
+            auto it = find_impl<false>(key);
+            if (it != values_.end()) {
+                list_.erase(&it->second);
+                values_.erase(it);
+            }
         }
 
         void clear() {
@@ -106,6 +113,7 @@ namespace containers {
         size_t size() const { return values_.size(); }
         bool empty() const { return values_.empty(); }
 
+        // TODO: perhaps return a reverse_iterator?
         std::optional<std::pair<const Key, Value>> evict() {
             std::optional<std::pair<const Key, Value>> result;
             auto* n = list_.pop_back();
@@ -114,6 +122,20 @@ namespace containers {
                 values_.erase(*n);                
             }
             return result;
+        }
+
+    private:
+        template< bool Update > iterator find_impl(const Key& key) {
+            // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
+            auto it = values_.find({ {key, Value()} });
+            if constexpr (Update) {
+                if (it != values_.end()) {
+                    // TODO: repeatedly finding the same element
+                    list_.erase(&*it);
+                    list_.push_front(&*it);
+                }
+            }
+            return it;
         }
     };
 }
