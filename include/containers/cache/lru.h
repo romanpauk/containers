@@ -10,7 +10,7 @@
 #include <unordered_set>
 
 namespace containers {
-    template< typename Key, typename Value > class lru_unordered_map {
+    template< typename Key, typename Value, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<Key>, typename Allocator = std::allocator< std::pair<const Key, Value > > > class lru_unordered_map {
         struct node {
             bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
 
@@ -19,8 +19,8 @@ namespace containers {
             mutable const node* prev;
         };
 
-        struct hash {
-            size_t operator()(const node& n) const noexcept { return std::hash<Key>()(n.value.first); }
+        struct hash: Hash {
+            size_t operator()(const node& n) const noexcept { return static_cast<const Hash&>(*this)(n.value.first); }
         };
 
         struct list {
@@ -106,7 +106,7 @@ namespace containers {
             iterator operator++(int) { typename values_type::iterator it = it_; ++it_; return it; }
 
         private:
-            template< typename Key, typename Value > friend class lru_unordered_map;
+            template< typename Key, typename Value, typename Hash, typename KeyEqual, typename Allocator > friend class lru_unordered_map;
             typename values_type::iterator it_;
         };
 
