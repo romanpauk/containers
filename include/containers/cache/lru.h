@@ -10,23 +10,21 @@
 #include <unordered_set>
 
 namespace containers {
-    template< typename ValueType > struct lru_cache {
-    private:
+    template< typename T > struct linked_list {
         struct node {
             bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
             bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
 
-            ValueType value;
+            T value;
             mutable const node* next;
             mutable const node* prev;
         };
 
-    public:
         struct iterator {
             iterator(const node* n) : node_(n) {}
 
-            const ValueType& operator*() { assert(node_); return node_->value; }
-            const ValueType* operator->() { assert(node_); return &node_->value; }
+            const T& operator*() { assert(node_); return node_->value; }
+            const T* operator->() { assert(node_); return &node_->value; }
 
             bool operator == (const iterator& other) const { return node_ == other.node_; }
             bool operator != (const iterator& other) const { return node_ != other.node_; }
@@ -34,8 +32,6 @@ namespace containers {
             iterator& operator++() { assert(node_); node_ = node_->next; return *this; }
             iterator operator++(int) { assert(node_); const node* n = node_; node_ = node_->next; return n; }
 
-        private:
-            template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT, typename CacheT > friend class lru_unordered_map;
             const node* node_;
         };
 
@@ -47,29 +43,6 @@ namespace containers {
         iterator end() const {
             assert(!tail_ || !tail_->next);
             return nullptr;
-        }
-
-        iterator evictable() const {
-            return begin();
-        }
-
-    private:
-        template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT, typename CacheT > friend class lru_unordered_map;
-
-        void emplace(const node& n, bool inserted) {
-            if (inserted) {
-                push_back(n);
-            } else if (n != back()) {
-                erase(n);
-                push_back(n);
-            }
-        }
-
-        void find(const node&) {}
-
-        void touch(const node& n) {
-            erase(n);
-            push_back(n);
         }
 /*
         void push_front(const node& n) {
@@ -130,8 +103,41 @@ namespace containers {
 
         void clear() { head_ = tail_ = nullptr; }
 
+    private:
         const node* head_ = nullptr;
         const node* tail_ = nullptr;
+    };
+
+    template< typename T > struct lru_cache {
+        using iterator = typename linked_list<T>::iterator;
+        using node = typename linked_list<T>::node;
+
+        iterator evictable() const {
+            return list_.begin();
+        }
+
+        iterator end() const { return list_.end(); }
+        
+        void erase(const node& n) { list_.erase(n); }
+
+        void emplace(const node& n, bool inserted) {
+            if (inserted) {
+                list_.push_back(n);
+            } else if (n != list_.back()) {
+                list_.erase(n);
+                list_.push_back(n);
+            }
+        }
+
+        void find(const node&) {}
+
+        void touch(const node& n) {
+            list_.erase(n);
+            list_.push_back(n);
+        }
+
+    private:
+        linked_list<T> list_;
     };
 
     template<
