@@ -39,8 +39,8 @@ namespace containers {
             assert(!tail_ || !tail_->next);
             return nullptr;
         }
-/*
-        void push_front(const node& n) {
+
+        void push_front(const node_type& n) {
             if (head_) {
                 assert(!head_->prev);
                 assert(tail_);
@@ -55,7 +55,7 @@ namespace containers {
                 n.prev = n.next = nullptr;
             }
         }
-*/
+
         void push_back(const node_type& n) {
             if (!tail_) {
                 assert(!head_);
@@ -86,14 +86,14 @@ namespace containers {
             return n.next;
         }
 
-        const node_type& front() const {
-            assert(head_);
-            return *head_;
+        const node_type* head() const {
+            assert(!head_ || !head_->prev);
+            return head_;
         }
 
-        const node_type& back() const {
-            assert(tail_);
-            return *tail_;
+        const node_type* tail() const {
+            assert(!tail_ || !tail_->next);
+            return tail_;
         }
 
         void clear() { head_ = tail_ = nullptr; }
@@ -116,7 +116,7 @@ namespace containers {
         using iterator = typename linked_list<node>::iterator;
 
         iterator evictable() const {
-            return list_.begin();
+            return list_.tail();
         }
 
         iterator end() const { return list_.end(); }
@@ -125,10 +125,10 @@ namespace containers {
 
         void emplace(const node& n, bool inserted) {
             if (inserted) {
-                list_.push_back(n);
-            } else if (n != list_.back()) {
+                list_.push_front(n);
+            } else if (&n != list_.head()) {
                 list_.erase(n);
-                list_.push_back(n);
+                list_.push_front(n);
             }
         }
 
@@ -136,7 +136,7 @@ namespace containers {
 
         void touch(const node& n) {
             list_.erase(n);
-            list_.push_back(n);
+            list_.push_front(n);
         }
 
     private:
@@ -155,10 +155,7 @@ namespace containers {
         using iterator = typename linked_list<node>::iterator;
 
         iterator evictable() const {
-            if (segments_[0].empty()) {
-                return segments_[1].begin();
-            }
-            return segments_[0].begin();
+            return segments_[0].empty() ? segments_[1].tail() : segments_[0].tail();
         }
 
         iterator end() const { return typename linked_list<node>::iterator(nullptr); }
@@ -170,11 +167,11 @@ namespace containers {
         void emplace(const node& n, bool inserted) {
             if (inserted) {
                 n.segment = &segments_[0];
-                segments_[0].push_back(n);
+                segments_[0].push_front(n);
             } else {
                 n.segment->erase(n);
                 n.segment = &segments_[1];
-                segments_[1].push_back(n);
+                segments_[1].push_front(n);
             }
         }
 
@@ -183,7 +180,7 @@ namespace containers {
         void touch(const node& n) {
             n.segment->erase(n);
             n.segment = &segments_[1];
-            segments_[1].push_back(n);
+            segments_[1].push_front(n);
         }
 
     private:
@@ -196,7 +193,7 @@ namespace containers {
         typename Hash = std::hash<Key>,
         typename KeyEqual = std::equal_to<Key>,
         typename Allocator = std::allocator< std::pair<const Key, Value > >,
-        typename Cache = lru_segmented_cache< std::pair< const Key, Value > >
+        typename Cache = lru_cache< std::pair< const Key, Value > >
     > class lru_unordered_map {
         using value_type = std::pair< const Key, Value >;
         using node_type = typename Cache::node;
@@ -237,7 +234,7 @@ namespace containers {
         iterator end() { return values_.end(); }
 
         template<typename... Args> std::pair<iterator, bool> emplace(Args&&... args) {
-            auto it = values_.emplace(typename Cache::node{{std::forward<Args>(args)...}});
+            auto it = values_.emplace(node_type{{std::forward<Args>(args)...}});
             cache_.emplace(*it.first, it.second);
             return {it.first, it.second};
         }
