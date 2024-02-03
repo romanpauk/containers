@@ -10,29 +10,23 @@
 #include <unordered_set>
 
 namespace containers {
-    template< typename T > struct linked_list {
-        struct node {
-            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
-            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
-
-            T value;
-            mutable const node* next;
-            mutable const node* prev;
-        };
+    template< typename Node > struct linked_list {
+        using node_type = Node;
+        using value_type = typename Node::value_type;
 
         struct iterator {
-            iterator(const node* n) : node_(n) {}
+            iterator(const node_type* n) : node_(n) {}
 
-            const T& operator*() { assert(node_); return node_->value; }
-            const T* operator->() { assert(node_); return &node_->value; }
+            const value_type& operator*() { assert(node_); return node_->value; }
+            const value_type* operator->() { assert(node_); return &node_->value; }
 
             bool operator == (const iterator& other) const { return node_ == other.node_; }
             bool operator != (const iterator& other) const { return node_ != other.node_; }
 
             iterator& operator++() { assert(node_); node_ = node_->next; return *this; }
-            iterator operator++(int) { assert(node_); const node* n = node_; node_ = node_->next; return n; }
+            iterator operator++(int) { assert(node_); const node_type* n = node_; node_ = node_->next; return n; }
 
-            const node* node_;
+            const node_type* node_;
         };
 
         iterator begin() const {
@@ -61,7 +55,7 @@ namespace containers {
             }
         }
 */
-        void push_back(const node& n) {
+        void push_back(const node_type& n) {
             if (!tail_) {
                 assert(!head_);
                 tail_ = head_ = &n;
@@ -73,7 +67,7 @@ namespace containers {
             }
         }
         
-        const node* erase(const node& n) {
+        const node_type* erase(const node_type& n) {
             if (n.next) {
                 n.next->prev = n.prev;
             } else {
@@ -91,26 +85,38 @@ namespace containers {
             return n.next;
         }
 
-        const node& front() const {
+        const node_type& front() const {
             assert(head_);
             return *head_;
         }
 
-        const node& back() const {
+        const node_type& back() const {
             assert(tail_);
             return *tail_;
         }
 
         void clear() { head_ = tail_ = nullptr; }
 
+        bool empty() const { return head_ == nullptr; }
+
     private:
-        const node* head_ = nullptr;
-        const node* tail_ = nullptr;
+        const node_type* head_ = nullptr;
+        const node_type* tail_ = nullptr;
     };
 
     template< typename T > struct lru_cache {
-        using iterator = typename linked_list<T>::iterator;
-        using node = typename linked_list<T>::node;
+        struct node {
+            using value_type = T;
+
+            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
+            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
+
+            value_type value;
+            mutable const node* next;
+            mutable const node* prev;
+        };
+
+        using iterator = typename linked_list<node>::iterator;
 
         iterator evictable() const {
             return list_.begin();
@@ -137,7 +143,58 @@ namespace containers {
         }
 
     private:
-        linked_list<T> list_;
+        linked_list<node> list_;
+    };
+
+    template< typename T > struct lru_segmented_cache {
+        struct node {
+            using value_type = T;
+
+            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
+            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
+
+            value_type value;
+            mutable linked_list<node>* segment;
+            mutable const node* next;
+            mutable const node* prev;
+        };
+
+        using iterator = typename linked_list<node>::iterator;
+
+        iterator evictable() const {
+            if (segments_[0].empty()) {
+                return segments_[1].begin();
+            }
+            return segments_[0].begin();
+        }
+
+        iterator end() const { return typename linked_list<node>::iterator(nullptr); }
+        
+        void erase(const node& n) { 
+            n.segment->erase(n);
+        }
+
+        void emplace(const node& n, bool inserted) {
+            if (inserted) {
+                n.segment = &segments_[0];
+                segments_[0].push_back(n);
+            } else {
+                n.segment->erase(n);
+                n.segment = &segments_[1];
+                segments_[1].push_back(n);
+            }
+        }
+
+        void find(const node&) {}
+
+        void touch(const node& n) {
+            n.segment->erase(n);
+            n.segment = &segments_[1];
+            segments_[1].push_back(n);
+        }
+
+    private:
+        linked_list<node> segments_[2];
     };
 
     template<
@@ -146,7 +203,7 @@ namespace containers {
         typename Hash = std::hash<Key>,
         typename KeyEqual = std::equal_to<Key>,
         typename Allocator = std::allocator< std::pair<const Key, Value > >,
-        typename Cache = lru_cache< std::pair< const Key, Value > >
+        typename Cache = lru_segmented_cache< std::pair< const Key, Value > >
     > class lru_unordered_map {
         using value_type = std::pair< const Key, Value >;
         using node_type = typename Cache::node;
