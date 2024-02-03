@@ -6,6 +6,7 @@
 //
 
 #include <cassert>
+#include <memory>
 #include <optional>
 #include <unordered_set>
 
@@ -107,10 +108,6 @@ namespace containers {
     template< typename T > struct lru_cache {
         struct node {
             using value_type = T;
-
-            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
-            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
-
             value_type value;
             mutable const node* next;
             mutable const node* prev;
@@ -149,10 +146,6 @@ namespace containers {
     template< typename T > struct lru_segmented_cache {
         struct node {
             using value_type = T;
-
-            bool operator == (const node& n) const noexcept { return value.first == n.value.first; }
-            bool operator != (const node& n) const noexcept { return value.first != n.value.first; }
-
             value_type value;
             mutable linked_list<node>* segment;
             mutable const node* next;
@@ -212,7 +205,12 @@ namespace containers {
             size_t operator()(const node_type& n) const noexcept { return static_cast<const Hash&>(*this)(n.value.first); }
         };
 
-        using values_type = std::unordered_set< node_type, hash >;
+        struct key_equal : KeyEqual {
+            size_t operator()(const node_type& lhs, const node_type& rhs) const noexcept { return static_cast<const KeyEqual&>(*this)(lhs.value.first, rhs.value.first); }
+        };
+
+        using values_type = std::unordered_set< node_type, hash, key_equal,
+            typename std::allocator_traits< Allocator >::template rebind_alloc< node_type > >;
 
         values_type values_;
         Cache cache_;
