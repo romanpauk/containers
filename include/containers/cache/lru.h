@@ -49,6 +49,10 @@ namespace containers {
             return nullptr;
         }
 
+        iterator evictable() const {
+            return begin();
+        }
+
     private:
         template< typename KeyT, typename ValueT, typename HashT, typename KeyEqualT, typename AllocatorT, typename CacheT > friend class lru_unordered_map;
 
@@ -222,13 +226,13 @@ namespace containers {
             if (it != end()) touch(it);
         }
 
-        const Cache& evictables () { return cache_; }
-        
-        typename Cache::iterator erase(const typename Cache::iterator& it) {
-            assert(it != cache_.end());
-            const typename Cache::node* n = cache_.erase(*it.node_);
-            values_.erase(*it.node_);
-            return n;
+        const Cache& cache() { return cache_; }
+
+        iterator evictable() {
+            auto it = cache_.evictable();
+            if (it != cache_.end())
+                return values_.find(*it.node_);
+            return end();
         }
     };
 }

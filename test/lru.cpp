@@ -12,17 +12,17 @@
 TEST(lru, basic_operations) {
 
     containers::lru_unordered_map< int, int > cache;
-    ASSERT_EQ(cache.evictables().begin(), cache.evictables().end());
+    ASSERT_EQ(cache.evictable(), cache.end());
     cache.emplace(1, 100);
-    ASSERT_EQ(cache.evictables().begin()->first, 1);
+    ASSERT_EQ(cache.evictable()->first, 1);
     cache.emplace(2, 200);
-    ASSERT_EQ(cache.evictables().begin()->first, 1);
+    ASSERT_EQ(cache.evictable()->first, 1);
     cache.emplace(3, 300);
-    ASSERT_EQ(cache.evictables().begin()->first, 1);
+    ASSERT_EQ(cache.evictable()->first, 1);
     cache.touch(cache.find(1));
-    ASSERT_EQ(cache.evictables().begin()->first, 2);
-    cache.erase(cache.evictables().begin());
-    ASSERT_EQ(cache.evictables().begin()->first, 3);
-    cache.erase(cache.evictables().begin());
-    ASSERT_EQ(cache.evictables().begin()->first, 1);
+    ASSERT_EQ(cache.evictable()->first, 2);
+    cache.erase(cache.evictable());
+    ASSERT_EQ(cache.evictable()->first, 3);
+    cache.erase(cache.evictable());
+    ASSERT_EQ(cache.evictable()->first, 1);
 }
