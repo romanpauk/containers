@@ -11,6 +11,8 @@
 #include <cassert>
 #include <vector>
 
+#include <intrin.h>
+
 namespace containers {
     template< typename T > struct MurmurMix {
         size_t operator()(T value) const {
@@ -29,79 +31,167 @@ namespace containers {
         size_t operator()(T value) const {
             size_t h = value;
             h *= 0xc4ceb9fe1a85ec53L;
+            h ^= h >> 33;
             return h;
         }
     };
 
-    template< typename Key, typename Hash = H<Key>, size_t PageSize = 128 > class hash_table {
+    template< typename T, size_t N > struct fixed_hash_table {
+        size_t size_{};
+        size_t collisions_{};
+        std::array< T, N > values_{};
+
+        bool insert(T key, size_t hash) {
+            for (size_t i = 0; i < values_.size(); ++i) {
+                size_t index = (hash + i) & (values_.size() - 1);
+                if (values_[index] == 0) {
+                    values_[index] = key;
+                    ++size_;
+                    return true;
+                }
+                else if (values_[index] == key) {
+                    return true;
+                }
+                else {
+                    ++collisions_;
+                }
+            }
+
+            return false;
+        }
+
+        size_t get_index(T key, size_t hash) {
+            for (size_t i = 0; i < values_.size(); ++i) {
+                size_t index = (hash + i) & (values_.size() - 1);
+                if (values_[index] == key) {
+                    return index;
+                }
+            }
+            return values_.size();
+        }
+
+        size_t size() const { return size_; }
+        size_t collisions() const { return collisions_; }
+
+        auto begin() { return values_.begin(); }
+        auto end() { return values_.end(); }
+    };
+
+    template< typename T, size_t N > struct fixed_hash_table2
+    {
+        size_t size_{};
+
+        size_t fastpath_{};
+        size_t fastpath_collisions_{};
+        size_t slowpath_{};
+        size_t slowpath_collisions_{};
+
+        std::array< T, N > values_{};
+
+        bool insert(T key, size_t hash) {
+            const uint8_t* hashp = (uint8_t*)&hash;
+            for (const uint8_t* p = hashp; p < hashp + 8; ++p) {
+                if (values_[*p] == 0) {
+                    values_[*p] = key;
+                    ++size_;
+                    fastpath_++;
+                    return true;
+                }
+                else if (values_[*p] == key) {
+                    fastpath_++;
+                    return true;
+                }
+                else {
+                    ++fastpath_collisions_;
+                }
+            }
+
+            for (size_t i = 0; i < values_.size(); ++i) {
+                size_t index = (hash + i) & (values_.size() - 1);
+                if (values_[index] == 0) {
+                    values_[index] = key;
+                    ++size_;
+                    slowpath_++;
+                    return true;
+                }
+                else if (values_[index] == key) {
+                    slowpath_++;
+                    return true;
+                }
+                else {
+                    ++slowpath_collisions_;
+                }
+            }
+
+            return false;
+        }
+
+        size_t get_index(T key, size_t hash) {
+            const uint8_t* hashp = (uint8_t*)&hash;
+            for (const uint8_t* p = hashp; p < hashp + 8; ++p) {
+                if (values_[*p] == key) {
+                    return *p;
+                }
+            }
+
+            for (size_t i = 0; i < values_.size(); ++i) {
+                size_t index = (hash + i) & (values_.size() - 1);
+                if (values_[index] == key) {
+                    return index;
+                }
+            }
+
+            return values_.size();
+        }
+
+        size_t size() const { return size_; }
+
+        auto begin() { return values_.begin(); }
+        auto end() { return values_.end(); }
+    };
+
+    template< typename Key, typename Hash = H<Key>, size_t PageSize = 256 > class hash_table {
         struct page {
             size_t depth_{};
-            size_t size_{};
-            size_t collisions_{};
-            std::array< Key, PageSize > values_{};
-
-            bool insert(Key key, size_t hash) {
-                for (size_t i = 0; i < values_.size(); ++i) {
-                    size_t index = (hash + i) & (values_.size() - 1);
-                    if (values_[index] == 0) {
-                        values_[index] = key;
-                        ++size_;
-                        return true;
-                    } else if(values_[index] == key) {
-                        return true;
-                    } else {
-                        ++collisions_;
-                    }
-                }
-
-                return false;
-            }
-
-            size_t get_index(Key key, size_t hash) {
-                for (size_t i = 0; i < values_.size(); ++i) {
-                    size_t index = (hash + i) & (values_.size() - 1);
-                    if (values_[index] == key) {
-                        return index;
-                    }
-                }
-                return values_.size();
-            }
+            //size_t refs_;
+            fixed_hash_table2<Key, PageSize> values_;
         };
 
         size_t depth_ = 0;
         std::vector< page* > pages_;
 
         size_t pageindex(size_t hash) {
-            return hash & ((1 << depth_) - 1);
+            return hash & ((1ull << depth_) - 1);
         }
 
-        size_t keyindex(Key key, size_t hash) {
-            return hash ^ (hash >> 31);
-            return key;
+        size_t keyindex(size_t hash) {
+            return _byteswap_uint64(hash);
         }
 
     public:
-        hash_table()
-        {
+        hash_table() {
             //pages_.reserve(1024);
             pages_.push_back(new page());
+            //++pages_[0]->refs_;
+        }
+
+        ~hash_table() {
+            for (auto* p : pages_) {
+                //if(--p->refs_ == 0)
+                //    delete p;
+            }
         }
 
         void insert(Key key) {
-            size_t h = Hash()(key);
-            //if (depth_ == 0) {
-            //    if (pages_[0]->insert(key, keyindex(h)))
-            //        return;
-            //}
-            page* p = pages_[pageindex(h)];
-            if(p->insert(key, keyindex(key, h)))
-                return;
-
-            if (p->size_ == p->values_.size()) {
+            size_t kh = Hash()(key);
+            page* p = pages_[pageindex(kh)];
+            if (p->values_.size() >= PageSize * 3/4) {
                 if (p->depth_ == depth_) {
                     pages_.resize(pages_.size() * 2);
-                    for (size_t i = 0; i < pages_.size() / 2; ++i)
+                    for (size_t i = 0; i < pages_.size() / 2; ++i) {
+                        //++pages_[i]->refs_;
                         pages_[i + pages_.size() / 2] = pages_[i];
+                    }
                     ++depth_;
                 }
                 page* p0 = new page();
@@ -113,33 +203,69 @@ namespace containers {
                         continue;
                     auto vh = Hash()(v);
                     auto* n = (pageindex(vh) & high_bit) ? p1 : p0;
-                    n->insert(v, keyindex(v, vh));
+                    n->values_.insert(v, keyindex(vh));
                 }
                 
-                for (size_t i = h & (high_bit - 1); i < pages_.size(); i += high_bit) {
+                for (size_t i = kh & (high_bit - 1); i < pages_.size(); i += high_bit) {
+                    //--pages_[i]->refs_;
                     pages_[i] = (i & high_bit) ? p1 : p0;
+                    //++pages_[i]->refs_;
                 }
-
-                delete p;
-
-                //for (size_t i = 0; i < pages_.size(); ++i)
-                  //  assert(pages_[i] != p);
-            } else
-                ; //p->insert(key, keyhash(key));
+            } else {
+                p->values_.insert(key, keyindex(kh));
+            }
+            
         }
 
         size_t get(Key key) {
-            size_t h = Hash()(key);
-            page* p = pages_[pageindex(h)];
-            return p->get_index(key, keyindex(key, h));
+            size_t kh = Hash()(key);
+            page* p = pages_[pageindex(kh)];
+            return p->values_.get_index(key, keyindex(kh));
         }
 
-        size_t collisions() {
-            size_t result = 0;
+        double occupancy() {
+            size_t used = 0;
+            size_t available = PageSize * pages_.size();
             for (page* p : pages_) {
-                result += p->collisions_;
+                used += p->values_.size();
             }
-            return result;
+            return double(used)/available;
+        }
+
+        size_t fast()
+        {
+            size_t cnt = 0;
+            for (page* p : pages_) {
+                cnt += p->values_.fastpath_;
+            }
+            return cnt;
+        }
+
+        size_t fast_collisions()
+        {
+            size_t cnt = 0;
+            for (page* p : pages_) {
+                cnt += p->values_.fastpath_collisions_;
+            }
+            return cnt;
+        }
+
+        size_t slow()
+        {
+            size_t cnt = 0;
+            for (page* p : pages_) {
+                cnt += p->values_.slowpath_;
+            }
+            return cnt;
+        }
+
+        size_t slow_collisions()
+        {
+            size_t cnt = 0;
+            for (page* p : pages_) {
+                cnt += p->values_.slowpath_collisions_;
+            }
+            return cnt;
         }
     };
 }

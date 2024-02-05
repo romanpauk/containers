@@ -79,7 +79,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         concurrentqueue
         $<$<PLATFORM_ID:Linux>:atomic>
     )
-    target_include_directories(containers_benchmark PRIVATE benchmark)
+    target_include_directories(containers_benchmark PRIVATE benchmark "C:/Projects/llvm-project/llvm/include" "C:/Projects/llvm-project/build/include")
     if(MSVC)
         target_compile_definitions(containers_benchmark PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
     endif()

@@ -18,11 +18,11 @@ TEST(eh_test, basic_operations) {
 }
 
 TEST(eh_test, collisions) {
-    for (size_t i = 128/4; i < 1000; i += 128/4) {
+    for (size_t i = 128/4; i < 200000; i += 128/4) {
         containers::hash_table<int> x;
         for (size_t j = 1; j <= i; ++j)
             x.insert(j);
 
-        fprintf(stderr, "N: %lu, collisions %lu\n", i, x.collisions());
+        fprintf(stderr, "N: %lu, occupancy %.2g, collisions fast %lu/%lu, slow %lu/%lu\n", i, x.occupancy(), x.fast(), x.fast_collisions(), x.slow(), x.slow_collisions());
     }
 }
