@@ -10,8 +10,11 @@
 #include <array>
 #include <cassert>
 #include <vector>
+#include <cstdint>
 
+#if defined(_MSV_VER)
 #include <intrin.h>
+#endif
 
 namespace containers {
     template< typename T > struct MurmurMix {
@@ -165,7 +168,13 @@ namespace containers {
         }
 
         size_t keyindex(size_t hash) {
+        #if defined(_MSC_VER)
             return _byteswap_uint64(hash);
+        #elif defined(__GNUC__)
+            return __builtin_bswap64(hash);
+        #else
+        #error "not supported"
+        #endif
         }
 
     public:

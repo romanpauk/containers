@@ -12,9 +12,8 @@
 
 #include <benchmark/benchmark.h>
 
+#if defined(LLVM_DENSE_MAPS)
 #include "llvm\\ADT\\DenseSet.h"
-
-static const size_t N = 1 << 26;
 
 void* llvm::allocate_buffer(size_t size, size_t alignment) {
     return ::operator new(size, std::align_val_t(alignment));
@@ -23,6 +22,36 @@ void* llvm::allocate_buffer(size_t size, size_t alignment) {
 void llvm::deallocate_buffer(void* ptr, size_t size, size_t alignment) {
     ::operator delete(ptr, size, std::align_val_t(alignment));
 }
+
+static void hashtable_DenseSet_insert(benchmark::State& state)
+{
+    llvm::DenseSet<int> x;
+    auto data = get_data(state.range());
+    for (auto _ : state) {
+        for (auto value : data)
+            x.insert(value);
+    }
+
+    state.SetBytesProcessed(state.iterations() * data.size());
+}
+
+static void hashtable_DenseSet_get(benchmark::State& state)
+{
+    llvm::DenseSet<int> x;
+    auto data = get_data(state.range());
+    for (auto& value : data)
+        x.insert(value);
+
+    for (auto _ : state) {
+        for (auto value : data)
+            benchmark::DoNotOptimize(x.find(value));
+    }
+
+    state.SetBytesProcessed(state.iterations() * data.size());
+}
+#endif
+
+static const size_t N = 1 << 26;
 
 std::vector< size_t > get_data(size_t n) {
     std::mt19937 gen;
@@ -91,36 +120,12 @@ static void hashtable_unordered_get(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
-static void hashtable_DenseSet_insert(benchmark::State& state)
-{
-    llvm::DenseSet<int> x;
-    auto data = get_data(state.range());
-    for (auto _ : state) {
-        for (auto value : data)
-            x.insert(value);
-    }
-
-    state.SetBytesProcessed(state.iterations() * data.size());
-}
-
-static void hashtable_DenseSet_get(benchmark::State& state)
-{
-    llvm::DenseSet<int> x;
-    auto data = get_data(state.range());
-    for (auto& value : data)
-        x.insert(value);
-
-    for (auto _ : state) {
-        for (auto value : data)
-            benchmark::DoNotOptimize(x.find(value));
-    }
-
-    state.SetBytesProcessed(state.iterations() * data.size());
-}
 BENCHMARK(hashtable_eh_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 BENCHMARK(hashtable_eh_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 BENCHMARK(hashtable_unordered_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 BENCHMARK(hashtable_unordered_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
+
+#if defined(LLVM_DENSE_MAPS)
 BENCHMARK(hashtable_DenseSet_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 BENCHMARK(hashtable_DenseSet_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);;
-
+#endif

@@ -8,6 +8,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 enable_testing()
 option(CONTAINERS_ENABLE_TESTING "enable testing through googletest" ON)
 option(CONTAINERS_ENABLE_BENCHMARK "enable benchmarking through googlebenchmark" ON)
+set(LLVM_DENSE_MAPS OFF)
 
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
@@ -79,7 +80,9 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         concurrentqueue
         $<$<PLATFORM_ID:Linux>:atomic>
     )
-    target_include_directories(containers_benchmark PRIVATE benchmark "C:/Projects/llvm-project/llvm/include" "C:/Projects/llvm-project/build/include")
+    if (LLVM_DENSE_MAPS)
+        target_include_directories(containers_benchmark PRIVATE benchmark "C:/Projects/llvm-project/llvm/include" "C:/Projects/llvm-project/build/include")
+    endif()
     if(MSVC)
         target_compile_definitions(containers_benchmark PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
     endif()
