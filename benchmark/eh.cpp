@@ -51,7 +51,7 @@ static void hashtable_DenseSet_get(benchmark::State& state)
 }
 #endif
 
-static const size_t N = 1 << 26;
+static const size_t N = 1 << 20;
 
 std::vector< size_t > get_data(size_t n) {
     std::mt19937 gen;

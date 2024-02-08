@@ -16,6 +16,8 @@
 #include <intrin.h>
 #endif
 
+#define MEMORY
+
 namespace containers {
     template< typename T > struct MurmurMix {
         size_t operator()(T value) const {
@@ -39,7 +41,7 @@ namespace containers {
         }
     };
 
-    template< typename T, size_t N > struct fixed_hash_table {
+    template< typename T, size_t N > struct fixed_hash_table1 {
         size_t size_{};
         size_t collisions_{};
         std::array< T, N > values_{};
@@ -153,11 +155,71 @@ namespace containers {
         auto end() { return values_.end(); }
     };
 
+    template< typename T, size_t N > struct metadata {
+        std::array<T, N> array_{};
+
+        size_t find(T fp) {
+            for (size_t i = 0; i < array_.size(); ++i) {
+                if (array_[i] == fp)
+                    return i;
+            }
+            return N;
+        }
+
+        void insert(size_t index, T fp) { 
+            assert(array_[index] == 0);
+            array_[index] = fp;
+        }
+
+        static constexpr size_t size() { return N; }
+    };
+
+    template< typename T, size_t N > struct fixed_hash_table3 {
+        size_t size_{};
+        metadata<uint8_t, N> meta_{};
+        std::array< T, N > values_{};
+
+        bool insert(T key, size_t hash) {
+            const uint8_t* hashp = (uint8_t*)&hash;
+            uint8_t index = meta_.find(*hashp);
+            if (index != meta_.size()) {
+                return values_[index] == key;
+            } else {
+                index = meta_.find(0);
+                if (index < meta_.size()) {
+                    meta_.insert(index, *hashp);
+                    values_[index] = key;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        size_t get_index(T key, size_t hash) {
+            const uint8_t* hashp = (uint8_t*)&hash;
+            uint8_t index = meta_.find(*hashp);
+            if (index != meta_.size()) {
+                if (values_[index] == key)
+                    return index;
+            }
+
+            return N;
+        }
+
+        size_t size() const { return size_; }
+
+        auto begin() { return values_.begin(); }
+        auto end() { return values_.end(); }
+    };
+
     template< typename Key, typename Hash = H<Key>, size_t PageSize = 256 > class hash_table {
         struct page {
             size_t depth_{};
-            //size_t refs_;
-            fixed_hash_table2<Key, PageSize> values_;
+        #if defined(MEMORY)
+            size_t refs_{};
+        #endif
+            fixed_hash_table1<Key, PageSize> values_;
         };
 
         size_t depth_ = 0;
@@ -179,16 +241,22 @@ namespace containers {
 
     public:
         hash_table() {
-            //pages_.reserve(1024);
+        #if defined(MEMORY)
+            pages_.reserve(1024);
+        #endif
             pages_.push_back(new page());
-            //++pages_[0]->refs_;
+        #if defined(MEMORY)
+            ++pages_[0]->refs_;
+        #endif
         }
 
         ~hash_table() {
+        #if defined(MEMORY)
             for (auto* p : pages_) {
-                //if(--p->refs_ == 0)
-                //    delete p;
+                if(--p->refs_ == 0)
+                    delete p;
             }
+        #endif
         }
 
         void insert(Key key) {
@@ -198,7 +266,9 @@ namespace containers {
                 if (p->depth_ == depth_) {
                     pages_.resize(pages_.size() * 2);
                     for (size_t i = 0; i < pages_.size() / 2; ++i) {
-                        //++pages_[i]->refs_;
+                    #if defined(MEMORY)
+                        ++pages_[i]->refs_;
+                    #endif
                         pages_[i + pages_.size() / 2] = pages_[i];
                     }
                     ++depth_;
@@ -216,9 +286,13 @@ namespace containers {
                 }
                 
                 for (size_t i = kh & (high_bit - 1); i < pages_.size(); i += high_bit) {
-                    //--pages_[i]->refs_;
+                #if defined(MEMORY)
+                    --pages_[i]->refs_;
+                #endif
                     pages_[i] = (i & high_bit) ? p1 : p0;
-                    //++pages_[i]->refs_;
+                #if defined(MEMORY)
+                    ++pages_[i]->refs_;
+                #endif
                 }
             } else {
                 p->values_.insert(key, keyindex(kh));
@@ -245,7 +319,7 @@ namespace containers {
         {
             size_t cnt = 0;
             for (page* p : pages_) {
-                cnt += p->values_.fastpath_;
+                //cnt += p->values_.fastpath_;
             }
             return cnt;
         }
@@ -254,7 +328,7 @@ namespace containers {
         {
             size_t cnt = 0;
             for (page* p : pages_) {
-                cnt += p->values_.fastpath_collisions_;
+                //cnt += p->values_.fastpath_collisions_;
             }
             return cnt;
         }
@@ -263,7 +337,7 @@ namespace containers {
         {
             size_t cnt = 0;
             for (page* p : pages_) {
-                cnt += p->values_.slowpath_;
+                //cnt += p->values_.slowpath_;
             }
             return cnt;
         }
@@ -272,7 +346,7 @@ namespace containers {
         {
             size_t cnt = 0;
             for (page* p : pages_) {
-                cnt += p->values_.slowpath_collisions_;
+                //cnt += p->values_.slowpath_collisions_;
             }
             return cnt;
         }
