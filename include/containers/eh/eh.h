@@ -213,13 +213,13 @@ namespace containers {
         auto end() { return values_.end(); }
     };
 
-    template< typename Key, typename Hash = H<Key>, size_t PageSize = 256 > class hash_table {
+    template< typename Key, typename Hash = H<Key>, size_t PageSize = 64 > class hash_table {
         struct page {
             size_t depth_{};
         #if defined(MEMORY)
             size_t refs_{};
         #endif
-            fixed_hash_table1<Key, PageSize> values_;
+            fixed_hash_table3<Key, PageSize> values_;
         };
 
         size_t depth_ = 0;
