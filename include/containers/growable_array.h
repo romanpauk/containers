@@ -14,10 +14,11 @@
 #include <vector>
 
 namespace containers {
-    template< typename T, size_t BufferSize = 512 > class growable_array {
+    template< typename T, size_t BlockByteSize = 4096 > class growable_array {
         struct block {
             static constexpr size_t capacity() {
-                return std::max(size_t(BufferSize / sizeof(T)), size_t(1));
+                static_assert(BlockByteSize >= sizeof(size_t));
+                return std::max(size_t((BlockByteSize - sizeof(size_t)) / sizeof(T)), size_t(1));
             }
 
             ~block() {
@@ -47,7 +48,7 @@ namespace containers {
                 return reinterpret_cast<T*>(ptr);
             }
 
-            std::array<uint8_t, sizeof(T)* capacity() > storage_;
+            std::array<uint8_t, sizeof(T) * capacity()> storage_;
             size_t size_ = 0;
         };
 
@@ -64,7 +65,13 @@ namespace containers {
         // TODO: atomic shared_ptr
         std::mutex desc_mutex_;
         std::shared_ptr< descriptor > desc_;
-        static thread_local std::shared_ptr< descriptor > desc_local_;
+
+        struct reader_state {
+            std::shared_ptr< descriptor > desc;
+            size_t size;
+        };
+
+        static thread_local reader_state reader_;
 
     public:
         using value_type = T;
@@ -84,15 +91,17 @@ namespace containers {
         }
 
         T& operator[](size_t n) {
-            if (!desc_local_ || n >= desc_local_->size) {
+            // TODO: reader_ needs to be on caller's stack
+            if (n >= reader_.size) {
                 std::lock_guard lock(desc_mutex_);
-                desc_local_ = desc_;
+                reader_.desc = desc_;
+                reader_.size = reader_.desc->size;
             }
 
-            assert(n < desc_local_->size);
+            assert(n < reader_.size);
             auto index = n / block::capacity();
             auto offset = n - index * block::capacity();
-            return (*desc_local_->blocks[index])[offset];
+            return (*reader_.desc->blocks[index])[offset];
         }
 
         size_t size() const { return desc_ ? desc_->size : 0; }
@@ -107,7 +116,7 @@ namespace containers {
                 if (desc_->blocks.back()->size() == block::capacity()) {
                     if (desc_->blocks.size() == desc_->blocks.capacity()) {
                         auto desc = std::make_shared<descriptor>();
-                        desc->blocks.reserve(desc_->blocks.size() * 2);
+                        desc->blocks.reserve(desc_->blocks.size() * 1.5);
                         desc->blocks.insert(desc->blocks.begin(), desc_->blocks.begin(), desc_->blocks.end());
                         desc->size = desc_->size;
 
@@ -124,5 +133,5 @@ namespace containers {
         }
     };
 
-    template< typename T, size_t BufferSize > thread_local std::shared_ptr< typename growable_array< T, BufferSize >::descriptor > growable_array< T, BufferSize >::desc_local_;
+    template< typename T, size_t BufferSize > thread_local typename growable_array< T, BufferSize >::reader_state growable_array< T, BufferSize >::reader_;
 }
