@@ -10,7 +10,7 @@
 #include <gtest/gtest.h>
 
 TEST(eh_test, basic_operations) {
-    containers::hash_table<int> x;
+    containers::flat_hash_table<int> x;
     for(size_t i = 1; i < 128/2; ++i)
         x.insert(i);
 
@@ -19,7 +19,7 @@ TEST(eh_test, basic_operations) {
 
 TEST(eh_test, collisions) {
     for (size_t i = 128/4; i < 200000; i += 128/4) {
-        containers::hash_table<int> x;
+        containers::eh_hash_table<int> x;
         for (size_t j = 1; j <= i; ++j)
             x.insert(j);
 

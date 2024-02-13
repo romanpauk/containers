@@ -12,6 +12,8 @@
 
 #include <benchmark/benchmark.h>
 
+std::vector< size_t > get_data(size_t n);
+
 #if defined(LLVM_DENSE_MAPS)
 #include "llvm\\ADT\\DenseSet.h"
 
@@ -25,9 +27,9 @@ void llvm::deallocate_buffer(void* ptr, size_t size, size_t alignment) {
 
 static void hashtable_DenseSet_insert(benchmark::State& state)
 {
-    llvm::DenseSet<int> x;
     auto data = get_data(state.range());
     for (auto _ : state) {
+        llvm::DenseSet<int> x;
         for (auto value : data)
             x.insert(value);
     }
@@ -35,7 +37,7 @@ static void hashtable_DenseSet_insert(benchmark::State& state)
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
-static void hashtable_DenseSet_get(benchmark::State& state)
+static void hashtable_DenseSet_find(benchmark::State& state)
 {
     llvm::DenseSet<int> x;
     auto data = get_data(state.range());
@@ -71,9 +73,9 @@ std::vector< size_t > get_data(size_t n) {
 }
 
 static void hashtable_eh_insert(benchmark::State& state) {
-    containers::hash_table<size_t> x;
     auto data = get_data(state.range());
     for (auto _ : state) {
+        containers::eh_hash_table<size_t> x;
         for (auto value: data)
             x.insert(value);
     }
@@ -81,8 +83,8 @@ static void hashtable_eh_insert(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
-static void hashtable_eh_get(benchmark::State& state) {
-    containers::hash_table<int> x;
+static void hashtable_eh_find(benchmark::State& state) {
+    containers::eh_hash_table<int> x;
     auto data = get_data(state.range());
     for (auto& value : data)
         x.insert(value);
@@ -95,10 +97,11 @@ static void hashtable_eh_get(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
-static void hashtable_unordered_insert(benchmark::State& state) {
-    std::unordered_set<int> x;
+static void hashtable_flat_insert(benchmark::State& state)
+{
     auto data = get_data(state.range());
     for (auto _ : state) {
+        containers::flat_hash_table<size_t> x;
         for (auto value : data)
             x.insert(value);
     }
@@ -106,7 +109,18 @@ static void hashtable_unordered_insert(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
-static void hashtable_unordered_get(benchmark::State& state) {
+static void hashtable_unordered_set_insert(benchmark::State& state) {
+    auto data = get_data(state.range());
+    for (auto _ : state) {
+        std::unordered_set<int> x;
+        for (auto value : data)
+            x.insert(value);
+    }
+
+    state.SetBytesProcessed(state.iterations() * data.size());
+}
+
+static void hashtable_unordered_set_find(benchmark::State& state) {
     std::unordered_set<int> x;
     auto data = get_data(state.range());
     for (auto& value : data)
@@ -120,12 +134,14 @@ static void hashtable_unordered_get(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * data.size());
 }
 
+BENCHMARK(hashtable_flat_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
+//BENCHMARK(flat_hash_table_find)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 BENCHMARK(hashtable_eh_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
-BENCHMARK(hashtable_eh_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
-BENCHMARK(hashtable_unordered_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
-BENCHMARK(hashtable_unordered_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
+BENCHMARK(hashtable_eh_find)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
+BENCHMARK(hashtable_unordered_set_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
+BENCHMARK(hashtable_unordered_set_find)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
 
 #if defined(LLVM_DENSE_MAPS)
 BENCHMARK(hashtable_DenseSet_insert)->UseRealTime()->Range(1, N)->RangeMultiplier(2);
-BENCHMARK(hashtable_DenseSet_get)->UseRealTime()->Range(1, N)->RangeMultiplier(2);;
+BENCHMARK(hashtable_DenseSet_find)->UseRealTime()->Range(1, N)->RangeMultiplier(2);;
 #endif

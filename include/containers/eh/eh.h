@@ -11,6 +11,7 @@
 #include <cassert>
 #include <vector>
 #include <cstdint>
+#include <algorithm>
 
 #if defined(_MSV_VER)
 #include <intrin.h>
@@ -36,7 +37,7 @@ namespace containers {
         size_t operator()(T value) const {
             size_t h = value;
             h *= 0xc4ceb9fe1a85ec53L;
-            h ^= h >> 33;
+            //h ^= h >> 33;
             return h;
         }
     };
@@ -84,6 +85,7 @@ namespace containers {
 
     template< typename T, size_t N > struct fixed_hash_table2
     {
+        static_assert(N >= 256);
         size_t size_{};
 
         size_t fastpath_{};
@@ -174,12 +176,35 @@ namespace containers {
         static constexpr size_t size() { return N; }
     };
 
+    template< typename T, size_t N > struct metadata2 {
+        alignas(32) std::array<T, N> array_{};
+
+        size_t find(T fp)
+        {
+            for (size_t i = 0; i < array_.size(); ++i) {
+                if (array_[i] == fp)
+                    return i;
+            }
+            return N;
+        }
+
+        void insert(size_t index, T fp)
+        {
+            assert(array_[index] == 0);
+            array_[index] = fp;
+        }
+
+        static constexpr size_t size() { return N; }
+    };
+
     template< typename T, size_t N > struct fixed_hash_table3 {
         size_t size_{};
-        metadata<uint8_t, N> meta_{};
+        metadata2<uint8_t, N> meta_{};
         std::array< T, N > values_{};
 
         bool insert(T key, size_t hash) {
+            //++size_;
+            //return true;
             const uint8_t* hashp = (uint8_t*)&hash;
             uint8_t index = meta_.find(*hashp);
             if (index != meta_.size()) {
@@ -213,13 +238,13 @@ namespace containers {
         auto end() { return values_.end(); }
     };
 
-    template< typename Key, typename Hash = H<Key>, size_t PageSize = 64 > class hash_table {
+    template< typename Key, typename Hash = H<Key>, size_t PageSize = 256 > class eh_hash_table {
         struct page {
-            size_t depth_{};
+            size_t depth_ = 0;
         #if defined(MEMORY)
-            size_t refs_{};
+            size_t refs_ = 0;
         #endif
-            fixed_hash_table3<Key, PageSize> values_;
+            fixed_hash_table2<Key, PageSize> values_;
         };
 
         size_t depth_ = 0;
@@ -240,7 +265,7 @@ namespace containers {
         }
 
     public:
-        hash_table() {
+        eh_hash_table() {
         #if defined(MEMORY)
             pages_.reserve(1024);
         #endif
@@ -250,7 +275,7 @@ namespace containers {
         #endif
         }
 
-        ~hash_table() {
+        ~eh_hash_table() {
         #if defined(MEMORY)
             for (auto* p : pages_) {
                 if(--p->refs_ == 0)
@@ -294,6 +319,8 @@ namespace containers {
                     ++pages_[i]->refs_;
                 #endif
                 }
+
+                delete p;
             } else {
                 p->values_.insert(key, keyindex(kh));
             }
@@ -349,6 +376,86 @@ namespace containers {
                 //cnt += p->values_.slowpath_collisions_;
             }
             return cnt;
+        }
+    };
+
+    template< typename Key, typename Hash = H<Key>, size_t BucketSize = 64 > class flat_hash_table {
+        struct Bucket {
+            //uint8_t meta[BucketSize];
+            alignas(Key) uint8_t storage[BucketSize * sizeof(Key)];
+        };
+
+        size_t buckets_size_;
+        //Bucket* buckets_[];
+
+        Key* values_;
+        size_t size_ = 0;
+        size_t capacity_ = 0;
+    public:
+        flat_hash_table()
+            : values_() {
+            values_ = (Key*)::operator new(sizeof(Key) * 64);
+            capacity_ = 64;
+            std::memset(values_, 0, capacity_ * sizeof(Key));
+        }
+
+        ~flat_hash_table() { ::operator delete(values_, capacity_); }
+
+        bool insert(Key key) {
+            if (size_ * 4 == capacity_ * 3) {
+                auto p = values_;
+                values_ = (Key*)::operator new(sizeof(Key)*capacity_ * 2);
+
+                //for (Key* b = values_, *e = values_ + capacity_ * 2; b != e; ++b) {
+                //    new(b) Key();
+                //}
+                std::memcpy(values_, p, sizeof(Key) * capacity_);
+                std::memset(values_ + capacity_, 0, sizeof(Key) * capacity_);
+                //memset(values_, 0, capacity_ * 2 * sizeof(Key));
+                //for (auto* px = p; px != p + capacity_; ++px) {
+                    //if (*px)
+                    //    insert_impl(*px);
+                    
+                //}
+
+                ::operator delete(p, capacity_);
+                capacity_ *= 2;
+
+                //values_.resize(values_.size() * 2);
+                /*
+                for (auto& v : values_) {
+                    if (v == 0)
+                        continue;
+                    auto vc = v;
+                    //v = 0;
+                    //insert_impl(vc);
+                }*/
+            }
+
+            size_++;
+            return true;
+            //return insert_impl(key);
+        }
+
+        bool insert_impl(Key key) {
+            auto h = Hash()(key);
+            //size_t index = (h) & (values_.size() - 1);
+            //if (values_[index] == 0) {
+            //    values_[index] = key;
+            //    ++size_;
+            //    return true;
+            //}
+            //return false;
+            size_t count = capacity_; //std::min(values_.size() / 2, 2ull);
+            for (size_t i = 0; i < 1; ++i) {
+                size_t index = (h + i) & (capacity_ - 1);
+                if (values_[index] == 0) {
+                    values_[index] = key;
+                    size_++;
+                    return true;
+                }
+            }
+            return false;
         }
     };
 }
