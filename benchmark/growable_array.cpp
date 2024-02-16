@@ -8,17 +8,23 @@
 #include <containers/growable_array.h>
 
 #include <benchmark/benchmark.h>
+#include <deque>
+#include <vector>
 #include <thread>
 
-static void growable_array(benchmark::State& state)
-{
-    containers::growable_array<int> array;
+#define N 1ull << 20
+
+template< typename Container > static void container_push_back(benchmark::State& state) {
     for (auto _ : state) {
-        for (size_t i = 0; i < 10000; ++i) {
-            array.push_back(1);
-        }
+        Container container;
+        for (size_t i = 0; i < state.range(); ++i)
+            container.push_back(i);
     }
-    state.SetItemsProcessed(state.iterations());
+    state.SetItemsProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK(growable_array);
+BENCHMARK_TEMPLATE(container_push_back, std::vector<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, std::deque<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
+//BENCHMARK_TEMPLATE(container_push_back, containers::growable_array2<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);
