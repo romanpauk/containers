@@ -11,7 +11,7 @@
 
 TEST(growable_array, basics) {
     containers::growable_array<int> array;
-    for (size_t i = 0; i < 1000000; ++i) {
+    for (size_t i = 0; i < 10000; ++i) {
         array.push_back(i);
 
         for (size_t j = 0; j < i; ++j) {

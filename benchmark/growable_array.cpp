@@ -12,7 +12,7 @@
 #include <vector>
 #include <thread>
 
-#define N 1ull << 20
+#define N 1ull << 22
 
 template< typename Container > static void container_push_back_locked(benchmark::State& state) {
     std::mutex mutex;
@@ -37,6 +37,5 @@ template< typename Container > static void container_push_back(benchmark::State&
 
 BENCHMARK_TEMPLATE(container_push_back_locked, std::vector<int>)->Range(1, N);
 BENCHMARK_TEMPLATE(container_push_back_locked, std::deque<int>)->Range(1, N);
-//BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_push_back, containers::growable_array2<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
 //BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);
