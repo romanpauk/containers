@@ -8,12 +8,14 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <mutex>
 #include <vector>
 #include <thread>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -342,7 +344,11 @@ namespace containers {
             if (map_) {
                 for (size_t i = 0; i < map_size_; ++i)
                     delete map_[i];
+                
                 delete [] map_;
+                map_ = nullptr;
+                map_size_ = map_capacity_ = 0;
+
                 retired_maps_.clear();
             }
         }
