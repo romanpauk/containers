@@ -15,7 +15,9 @@
 #include <thread>
 #include <cstdlib>
 #include <deque>
+#if defined(__linux__)
 #include <sys/mman.h>
+#endif
 
 namespace containers {
 /*    template< typename T, size_t BlockByteSize = 4096 > class growable_array {
@@ -250,12 +252,12 @@ namespace containers {
 
             tail_->push_back(std::forward<Ty>(value));
             ++size_;
-            asm volatile ("" ::: "memory");
         }
     };
 
     template< typename T, size_t BufferSize > thread_local typename growable_array< T, BufferSize >::reader_state growable_array< T, BufferSize >::reader_;
 
+#if defined(__linux__)
     template< typename T, size_t Capacity = 1 << 30 > class mmapped_array {
         static constexpr size_t capacity_ = Capacity;
         size_t size_ = 0;
@@ -274,5 +276,119 @@ namespace containers {
             new(reinterpret_cast<T*>(data_) + size_++) T(std::forward<Ty>(value));
         }
     };
+#endif
 
+    template< typename T, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 > class growable_array2 {
+        struct block {
+            static constexpr size_t capacity() {
+                static_assert(BlockByteSize >= sizeof(size_t));
+                return std::max(size_t((BlockByteSize - sizeof(size_t)) / sizeof(T)), size_t(1));
+            }
+
+            ~block() {
+                if constexpr (!std::is_trivially_destructible_v<T>) {
+                    if (size_ > 0) {
+                        do {
+                            at(--size_)->~T();
+                        } while (size_);
+                    }
+                }
+            }
+
+            template< typename Ty > void push_back(Ty&& value) {
+                assert(size_ < capacity());
+                new (at(size_++)) T(std::forward<Ty>(value));
+            }
+
+            T& operator[](size_t n) {
+                assert(n < size_);
+                return *at(n);
+            }
+
+            size_t size() const { return size_; }
+
+        private:
+            T* at(size_t n) {
+                uint8_t* ptr = storage_.data() + n * sizeof(T);
+                assert((reinterpret_cast<uintptr_t>(ptr) & (alignof(T) - 1)) == 0);
+                return reinterpret_cast<T*>(ptr);
+            }
+
+            std::array<uint8_t, sizeof(T) * capacity()> storage_;
+            size_t size_ = 0;
+        };
+
+        block* allocate_block()
+        {
+            // TODO: allocator
+            return new (std::align_val_t(alignof(T))) block();
+        }
+
+        alignas(64) std::atomic<size_t> size_ = 0;
+
+        alignas(64) block** map_ = nullptr;
+        size_t map_size_ = 0;
+        size_t map_capacity_ = 0;
+        std::deque< std::unique_ptr<block*[]> > retired_maps_;
+
+    public:
+        using value_type = T;
+
+        ~growable_array2() {
+            clear();
+        }
+
+        void clear() {
+            if (map_) {
+                for (size_t i = 0; i < map_size_; ++i)
+                    delete map_[i];
+                delete [] map_;
+                retired_maps_.clear();
+            }
+        }
+
+        const T& operator[](size_t n) const {
+            return const_cast<growable_array<T>&>(*this)->operator[](n);
+        }
+
+        T& operator[](size_t n) {
+            size_t size = size_.load(std::memory_order_acquire);
+            assert(n < size);
+            auto index = n / block::capacity();
+            auto offset = size - index * block::capacity();
+            return (*map_[index])[offset];
+        }
+
+        size_t size() const { return size_.load(std::memory_order_relaxed); }
+
+        template< typename Ty > void push_back(Ty&& value) {
+            if (map_) {
+                assert(map_size_ > 0);
+                if (map_[map_size_ - 1]->size() < block::capacity()) {
+            insert:
+                    map_[map_size_ - 1]->push_back(std::forward<Ty>(value));
+                    size_.store(size_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+                } else {
+                    if (map_size_ < map_capacity_) {
+                        map_[map_size_++] = new block();
+                        goto insert;
+                    } else {
+                        auto map = new block * [map_capacity_ * BlocksGrowSize];
+                        std::memcpy(map, map_, sizeof(block*) * map_capacity_);
+                        map_capacity_ *= BlocksGrowSize;
+                        retired_maps_.emplace_back(map_);
+                        map_ = map;
+                        map_[map_size_++] = new block();
+                        goto insert;
+                    }
+                }
+            } else {
+                map_ = new block * [BlocksGrowSize];
+                map_[0] = new block();
+                map_size_ = 1;
+                map_capacity_ = BlocksGrowSize;
+                goto insert;
+            }
+        }
+    };
 }

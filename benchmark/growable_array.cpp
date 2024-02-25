@@ -25,6 +25,6 @@ template< typename Container > static void container_push_back(benchmark::State&
 
 BENCHMARK_TEMPLATE(container_push_back, std::vector<int>)->Range(1, N);
 BENCHMARK_TEMPLATE(container_push_back, std::deque<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
-//BENCHMARK_TEMPLATE(container_push_back, containers::growable_array2<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);
+//BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::growable_array2<int>)->Range(1, N);
+//BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);
