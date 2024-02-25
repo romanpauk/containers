@@ -44,7 +44,8 @@ namespace containers {
     };
 #endif
 
-    template< typename T, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 > class growable_array {
+    template< typename T, typename Allocator = std::allocator<T>, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 >
+    class growable_array: Allocator {
         struct block_trivially_destructible {
             static_assert(std::is_trivially_destructible_v<T>);
 
@@ -80,12 +81,10 @@ namespace containers {
             static_assert(std::is_trivially_destructible_v<T>);
 
             ~block_destructible() {
-                if constexpr (!std::is_trivially_destructible_v<T>) {
-                    if (size_ > 0) {
-                        do {
-                            at(--size_)->~T();
-                        } while (size_);
-                    }
+                if (size_ > 0) {
+                    do {
+                        at(--size_)->~T();
+                    } while (size_);
                 }
             }
         };
@@ -100,6 +99,18 @@ namespace containers {
         size_t map_capacity_ = 0;
         std::deque< std::unique_ptr<block*[]> > retired_maps_;
 
+        template< typename U > U* allocate(size_t n) {
+            std::allocator_traits<Allocator>::rebind_alloc<U> allocator(*this);
+            U* ptr = allocator.allocate(n);
+            allocator.construct(ptr);
+            return ptr;
+        }
+
+        template< typename U > void deallocate(U* ptr, size_t n) {
+            std::allocator_traits<Allocator>::rebind_alloc<U> allocator(*this);
+            allocator.deallocate(ptr, n);
+        }
+
     public:
         using value_type = T;
 
@@ -109,8 +120,11 @@ namespace containers {
 
         void clear() {
             if (map_) {
-                for (size_t i = 0; i < map_size_; ++i)
-                    delete map_[i];
+                for (size_t i = 0; i < map_size_; ++i) {
+                    if (!std::is_trivially_destructible_v<block>)
+                        map_[i]->~block();
+                    deallocate<block>(map_[i], 1);
+                }
                 
                 delete [] map_;
                 map_ = nullptr;
@@ -143,7 +157,7 @@ namespace containers {
                     size_.store(size_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
                 } else {
                     if (map_size_ < map_capacity_) {
-                        map_[map_size_++] = new block();
+                        map_[map_size_++] = allocate<block>(1);
                         goto insert;
                     } else {
                         auto map = new block * [map_capacity_ * BlocksGrowSize];
@@ -151,13 +165,13 @@ namespace containers {
                         map_capacity_ *= BlocksGrowSize;
                         retired_maps_.emplace_back(map_);
                         map_ = map;
-                        map_[map_size_++] = new block();
+                        map_[map_size_++] = allocate<block>(1);
                         goto insert;
                     }
                 }
             } else {
                 map_ = new block * [BlocksGrowSize];
-                map_[0] = new block();
+                map_[0] = allocate<block>(1);
                 map_size_ = 1;
                 map_capacity_ = BlocksGrowSize;
                 goto insert;
