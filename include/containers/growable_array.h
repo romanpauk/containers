@@ -83,7 +83,7 @@ namespace containers {
             ~block_destructible() {
                 if (size_ > 0) {
                     do {
-                        at(--size_)->~T();
+                        this->at(--size_)->~T();
                     } while (size_);
                 }
             }
@@ -100,14 +100,14 @@ namespace containers {
         std::deque< std::unique_ptr<block*[]> > retired_maps_;
 
         template< typename U > U* allocate(size_t n) {
-            std::allocator_traits<Allocator>::rebind_alloc<U> allocator(*this);
+            typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
             U* ptr = allocator.allocate(n);
             allocator.construct(ptr);
             return ptr;
         }
 
         template< typename U > void deallocate(U* ptr, size_t n) {
-            std::allocator_traits<Allocator>::rebind_alloc<U> allocator(*this);
+            typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
             allocator.deallocate(ptr, n);
         }
 
