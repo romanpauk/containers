@@ -281,20 +281,12 @@ namespace containers {
 #endif
 
     template< typename T, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 > class growable_array2 {
-        struct block {
+        struct block_trivially_destructible {
+            static_assert(std::is_trivially_destructible_v<T>);
+
             static constexpr size_t capacity() {
                 static_assert(BlockByteSize >= sizeof(size_t));
                 return std::max(size_t((BlockByteSize - sizeof(size_t)) / sizeof(T)), size_t(1));
-            }
-
-            ~block() {
-                if constexpr (!std::is_trivially_destructible_v<T>) {
-                    if (size_ > 0) {
-                        do {
-                            at(--size_)->~T();
-                        } while (size_);
-                    }
-                }
             }
 
             template< typename Ty > void push_back(Ty&& value) {
@@ -320,16 +312,27 @@ namespace containers {
             size_t size_ = 0;
         };
 
-        block* allocate_block()
-        {
-            // TODO: allocator
-            return new (std::align_val_t(alignof(T))) block();
-        }
+        struct block_destructible: block_trivially_destructible {
+            static_assert(std::is_trivially_destructible_v<T>);
+
+            ~block_destructible() {
+                if constexpr (!std::is_trivially_destructible_v<T>) {
+                    if (size_ > 0) {
+                        do {
+                            at(--size_)->~T();
+                        } while (size_);
+                    }
+                }
+            }
+        };
+
+        using block = std::conditional_t< std::is_trivially_destructible_v<T>, block_trivially_destructible, block_destructible >;
 
         alignas(64) std::atomic<size_t> size_ = 0;
 
         alignas(64) block** map_ = nullptr;
-        size_t map_size_ = 0;
+
+        alignas(64) size_t map_size_ = 0;
         size_t map_capacity_ = 0;
         std::deque< std::unique_ptr<block*[]> > retired_maps_;
 
