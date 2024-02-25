@@ -97,7 +97,8 @@ namespace containers {
 
         alignas(64) size_t map_size_ = 0;
         size_t map_capacity_ = 0;
-        std::deque< std::unique_ptr<block*[]> > retired_maps_;
+        std::deque< std::pair<block**, size_t>,
+            typename std::allocator_traits<Allocator>::template rebind_alloc< std::pair<block**, size_t> > > retired_maps_;
 
         template< typename U > U* allocate(size_t n) {
             typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
@@ -114,22 +115,30 @@ namespace containers {
     public:
         using value_type = T;
 
+        growable_array()
+            : retired_maps_(*this)
+        {}
+
         ~growable_array() {
             clear();
         }
 
         void clear() {
-            if (map_) {
-                for (size_t i = 0; i < map_size_; ++i) {
+            if (map_size_ > 0) {
+                do {
+                    --map_size_;
                     if (!std::is_trivially_destructible_v<block>)
-                        map_[i]->~block();
-                    deallocate<block>(map_[i], 1);
-                }
+                        map_[map_size_]->~block();
+                    deallocate<block>(map_[map_size_], 1);
+                } while (map_size_);
                 
-                delete [] map_;
+                deallocate<block*>(map_, map_capacity_);
                 map_ = nullptr;
-                map_size_ = map_capacity_ = 0;
+                map_capacity_ = 0;
 
+                for (auto& [map, size] : retired_maps_) {
+                    deallocate<block*>(map, size);
+                }
                 retired_maps_.clear();
             }
         }
@@ -160,17 +169,17 @@ namespace containers {
                         map_[map_size_++] = allocate<block>(1);
                         goto insert;
                     } else {
-                        auto map = new block * [map_capacity_ * BlocksGrowSize];
+                        auto map = allocate<block*>(map_capacity_ * BlocksGrowSize);
                         std::memcpy(map, map_, sizeof(block*) * map_capacity_);
-                        map_capacity_ *= BlocksGrowSize;
-                        retired_maps_.emplace_back(map_);
+                        retired_maps_.emplace_back(map_, map_capacity_);
                         map_ = map;
+                        map_capacity_ *= BlocksGrowSize;
                         map_[map_size_++] = allocate<block>(1);
                         goto insert;
                     }
                 }
             } else {
-                map_ = new block * [BlocksGrowSize];
+                map_ = allocate<block*>(BlocksGrowSize);
                 map_[0] = allocate<block>(1);
                 map_size_ = 1;
                 map_capacity_ = BlocksGrowSize;
