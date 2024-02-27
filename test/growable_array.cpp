@@ -9,13 +9,24 @@
 
 #include <gtest/gtest.h>
 
-TEST(growable_array, basics) {
+TEST(growable_array, basics_trivial) {
     containers::growable_array<int> array;
     for (size_t i = 0; i < 10000; ++i) {
         array.push_back(i);
 
         for (size_t j = 0; j < i; ++j) {
             ASSERT_EQ(array[j], j);
+        }
+    }
+}
+
+TEST(growable_array, basics) {
+    containers::growable_array<std::string> array;
+    for (size_t i = 0; i < 10000; ++i) {
+        array.push_back(std::to_string(i));
+
+        for (size_t j = 0; j < i; ++j) {
+            ASSERT_EQ(array[j], std::to_string(j));
         }
     }
 }

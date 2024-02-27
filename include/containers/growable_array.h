@@ -47,7 +47,7 @@ namespace containers {
     template< typename T, typename Allocator = std::allocator<T>, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 >
     class growable_array: Allocator {
         struct block_trivially_destructible {
-            static_assert(std::is_trivially_destructible_v<T>);
+            //static_assert(std::is_trivially_destructible_v<T>);
 
             static constexpr size_t capacity() {
                 static_assert(BlockByteSize >= sizeof(size_t));
@@ -66,7 +66,7 @@ namespace containers {
 
             size_t size() const { return size_; }
 
-        private:
+        protected:
             T* at(size_t n) {
                 uint8_t* ptr = storage_.data() + n * sizeof(T);
                 assert((reinterpret_cast<uintptr_t>(ptr) & (alignof(T) - 1)) == 0);
@@ -78,13 +78,13 @@ namespace containers {
         };
 
         struct block_destructible: block_trivially_destructible {
-            static_assert(std::is_trivially_destructible_v<T>);
+            //static_assert(std::is_trivially_destructible_v<T>);
 
             ~block_destructible() {
-                if (size_ > 0) {
+                if (this->size_ > 0) {
                     do {
-                        this->at(--size_)->~T();
-                    } while (size_);
+                        this->at(--this->size_)->~T();
+                    } while (this->size_);
                 }
             }
         };
@@ -100,17 +100,17 @@ namespace containers {
         std::deque< std::pair<block**, size_t>,
             typename std::allocator_traits<Allocator>::template rebind_alloc< std::pair<block**, size_t> > > retired_maps_;
 
-        template< typename U > U* allocate(size_t n) {
-            typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
-            U* ptr = allocator.allocate(n);
-            allocator.construct(ptr);
-            return ptr;
-        }
+        //template< typename U > U* allocate(size_t n) {
+            //typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
+            //U* ptr = allocator.allocate(n);
+            //allocator.construct(ptr);
+            //return ptr;
+        //}
 
-        template< typename U > void deallocate(U* ptr, size_t n) {
-            typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
-            allocator.deallocate(ptr, n);
-        }
+        //template< typename U > void deallocate(U* ptr, size_t n) {
+        //    typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
+        //    allocator.deallocate(ptr, n);
+        //}
 
     public:
         using value_type = T;
@@ -129,15 +129,18 @@ namespace containers {
                     --map_size_;
                     if (!std::is_trivially_destructible_v<block>)
                         map_[map_size_]->~block();
-                    deallocate<block>(map_[map_size_], 1);
+                    //deallocate<block>(map_[map_size_], 1);
+                    delete map_[map_size_];
                 } while (map_size_);
                 
-                deallocate<block*>(map_, map_capacity_);
+                // deallocate<block*>(map_, map_capacity_);
+                delete [] map_;
                 map_ = nullptr;
                 map_capacity_ = 0;
 
                 for (auto& [map, size] : retired_maps_) {
-                    deallocate<block*>(map, size);
+                    // deallocate<block*>(map, size);
+                    delete [] map;
                 }
                 retired_maps_.clear();
             }
@@ -155,6 +158,16 @@ namespace containers {
             return (*map_[index])[offset];
         }
 
+        T& access(size_t& size, size_t n) {
+            if (n >= size) {
+                size = size_.load(std::memory_order_acquire);
+            }
+            assert(n < size);
+            auto index = n / block::capacity();
+            auto offset = n - index * block::capacity();
+            return (*map_[index])[offset];
+        }
+
         size_t size() const { return size_.load(std::memory_order_relaxed); }
 
         template< typename Ty > void push_back(Ty&& value) {
@@ -166,21 +179,21 @@ namespace containers {
                     size_.store(size_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
                 } else {
                     if (map_size_ < map_capacity_) {
-                        map_[map_size_++] = allocate<block>(1);
+                        map_[map_size_++] = new block(); // allocate<block>(1);
                         goto insert;
                     } else {
-                        auto map = allocate<block*>(map_capacity_ * BlocksGrowSize);
+                        auto map = new block*[map_capacity_ * BlocksGrowSize]; // allocate<block*>(map_capacity_ * BlocksGrowSize);
                         std::memcpy(map, map_, sizeof(block*) * map_capacity_);
                         retired_maps_.emplace_back(map_, map_capacity_);
                         map_ = map;
                         map_capacity_ *= BlocksGrowSize;
-                        map_[map_size_++] = allocate<block>(1);
+                        map_[map_size_++] = new block(); // allocate<block>(1);
                         goto insert;
                     }
                 }
             } else {
-                map_ = allocate<block*>(BlocksGrowSize);
-                map_[0] = allocate<block>(1);
+                map_ = new block*[BlocksGrowSize];
+                map_[0] = new block(); //allocate<block>(1);
                 map_size_ = 1;
                 map_capacity_ = BlocksGrowSize;
                 goto insert;
