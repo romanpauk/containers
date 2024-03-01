@@ -114,6 +114,11 @@ namespace containers {
 
     public:
         using value_type = T;
+        
+        class reader_state {
+            template< typename U, typename AllocatorU, size_t, size_t > friend class growable_array;
+            size_t size;
+        };
 
         growable_array()
             : retired_maps_(*this)
@@ -158,9 +163,9 @@ namespace containers {
             return (*map_[index])[offset];
         }
 
-        T& access(size_t& size, size_t n) {
-            if (n >= size) {
-                size = size_.load(std::memory_order_acquire);
+        T& read(reader_state& state, size_t n) {
+            if (n >= state.size) {
+                state.size = size_.load(std::memory_order_acquire);
             }
             assert(n < size);
             auto index = n / block::capacity();

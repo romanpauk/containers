@@ -52,10 +52,10 @@ template< typename Container > static void container_indexed_access_local(benchm
     Container container;
     container.push_back(0);
     size_t result = 0;
-    static thread_local size_t size;
+    static thread_local typename Container::reader_state reader;
     for (auto _ : state) {
         for (size_t i = 0; i < state.range(); ++i)
-            result += container.access(size, 0);
+            result += container.read(reader, 0);
     }
     benchmark::DoNotOptimize(result);
     state.SetItemsProcessed(state.iterations() * state.range());
