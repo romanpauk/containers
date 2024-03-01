@@ -112,6 +112,12 @@ namespace containers {
         //    allocator.deallocate(ptr, n);
         //}
 
+        T& read(size_t size, size_t n) {
+            assert(n < size);
+            auto index = n / block::capacity();
+            auto offset = n - index * block::capacity();
+            return (*map_[index])[offset];
+        }
     public:
         using value_type = T;
         
@@ -156,21 +162,13 @@ namespace containers {
         }
 
         T& operator[](size_t n) {
-            size_t size = size_.load(std::memory_order_acquire);
-            assert(n < size);
-            auto index = n / block::capacity();
-            auto offset = n - index * block::capacity();
-            return (*map_[index])[offset];
+            return read(size_.load(std::memory_order_acquire), n);
         }
 
         T& read(reader_state& state, size_t n) {
-            if (n >= state.size) {
+            if (n >= state.size)
                 state.size = size_.load(std::memory_order_acquire);
-            }
-            assert(n < size);
-            auto index = n / block::capacity();
-            auto offset = n - index * block::capacity();
-            return (*map_[index])[offset];
+            return read(state.size, n);
         }
 
         size_t size() const { return size_.load(std::memory_order_relaxed); }
