@@ -12,11 +12,10 @@
 #include <cassert>
 #include <memory>
 #include <mutex>
-#include <vector>
 #include <thread>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
+
 #if defined(__linux__)
 #include <sys/mman.h>
 #endif
@@ -44,14 +43,14 @@ namespace containers {
     };
 #endif
 
-    template< typename T, typename Allocator = std::allocator<T>, size_t BlockByteSize = 4096, size_t BlocksGrowSize = 16 >
+    template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 8, size_t BlocksGrowFactor = 16 >
     class growable_array: Allocator {
         struct block_trivially_destructible {
             //static_assert(std::is_trivially_destructible_v<T>);
 
             static constexpr size_t capacity() {
-                static_assert(BlockByteSize >= sizeof(size_t));
-                return std::max(size_t((BlockByteSize - sizeof(size_t)) / sizeof(T)), size_t(1));
+                static_assert((BlockSize & (BlockSize - 1)) == 0);
+                return BlockSize;
             }
 
             template< typename Ty > void push_back(Ty&& value) {
@@ -91,14 +90,19 @@ namespace containers {
 
         using block = std::conditional_t< std::is_trivially_destructible_v<T>, block_trivially_destructible, block_destructible >;
 
+        struct block_map {
+            block_map* next = 0;
+            block* blocks[0];
+        };
+
         alignas(64) std::atomic<size_t> size_ = 0;
 
-        alignas(64) block** map_ = nullptr;
+        alignas(64) block_map* map_ = nullptr;
 
         alignas(64) size_t map_size_ = 0;
         size_t map_capacity_ = 0;
-        std::deque< std::pair<block**, size_t>,
-            typename std::allocator_traits<Allocator>::template rebind_alloc< std::pair<block**, size_t> > > retired_maps_;
+        
+        block_map retired_maps_;
 
         //template< typename U > U* allocate(size_t n) {
             //typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
@@ -112,11 +116,14 @@ namespace containers {
         //    allocator.deallocate(ptr, n);
         //}
 
+        static constexpr size_t log2(size_t n) { return ((n<2) ? 1 : 1 + log2(n/2)); }
+
         T& read(size_t size, size_t n) {
             assert(n < size);
-            auto index = n / block::capacity();
-            auto offset = n - index * block::capacity();
-            return (*map_[index])[offset];
+            assert(blocks_);
+            auto index = n >> log2(block::capacity());
+            auto offset = n & (block::capacity() - 1);
+            return (*map_->blocks[index])[offset];
         }
     public:
         using value_type = T;
@@ -125,10 +132,6 @@ namespace containers {
             template< typename U, typename AllocatorU, size_t, size_t > friend class growable_array;
             size_t size;
         };
-
-        growable_array()
-            : retired_maps_(*this)
-        {}
 
         ~growable_array() {
             clear();
@@ -139,21 +142,22 @@ namespace containers {
                 do {
                     --map_size_;
                     if (!std::is_trivially_destructible_v<block>)
-                        map_[map_size_]->~block();
+                        map_->blocks[map_size_]->~block();
                     //deallocate<block>(map_[map_size_], 1);
-                    delete map_[map_size_];
+                    delete map_->blocks[map_size_];
                 } while (map_size_);
                 
                 // deallocate<block*>(map_, map_capacity_);
-                delete [] map_;
+                std::free(map_);
                 map_ = nullptr;
                 map_capacity_ = 0;
 
-                for (auto& [map, size] : retired_maps_) {
-                    // deallocate<block*>(map, size);
-                    delete [] map;
+                block_map* retired = retired_maps_.next;
+                while (retired) {
+                    block_map* next = retired->next;
+                    std::free(retired);
+                    retired = next;
                 }
-                retired_maps_.clear();
             }
         }
 
@@ -176,29 +180,30 @@ namespace containers {
         template< typename Ty > void push_back(Ty&& value) {
             if (map_) {
                 assert(map_size_ > 0);
-                if (map_[map_size_ - 1]->size() < block::capacity()) {
+                if (map_->blocks[map_size_ - 1]->size() < block::capacity()) {
             insert:
-                    map_[map_size_ - 1]->push_back(std::forward<Ty>(value));
+                    map_->blocks[map_size_ - 1]->push_back(std::forward<Ty>(value));
                     size_.store(size_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
                 } else {
                     if (map_size_ < map_capacity_) {
-                        map_[map_size_++] = new block(); // allocate<block>(1);
+                        map_->blocks[map_size_++] = new block(); // allocate<block>(1);
                         goto insert;
                     } else {
-                        auto map = new block*[map_capacity_ * BlocksGrowSize]; // allocate<block*>(map_capacity_ * BlocksGrowSize);
-                        std::memcpy(map, map_, sizeof(block*) * map_capacity_);
-                        retired_maps_.emplace_back(map_, map_capacity_);
+                        auto map = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * map_capacity_ * BlocksGrowFactor);
+                        std::memcpy(map->blocks, map_->blocks, sizeof(block*) * map_capacity_);
+                        map_->next = retired_maps_.next;
+                        retired_maps_.next = map_;
                         map_ = map;
-                        map_capacity_ *= BlocksGrowSize;
-                        map_[map_size_++] = new block(); // allocate<block>(1);
+                        map_capacity_ *= BlocksGrowFactor;
+                        map_->blocks[map_size_++] = new block(); // allocate<block>(1);
                         goto insert;
                     }
                 }
             } else {
-                map_ = new block*[BlocksGrowSize];
-                map_[0] = new block(); //allocate<block>(1);
+                map_ = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * BlocksGrowFactor);
+                map_->blocks[0] = new block(); //allocate<block>(1);
                 map_size_ = 1;
-                map_capacity_ = BlocksGrowSize;
+                map_capacity_ = BlocksGrowFactor;
                 goto insert;
             }
         }
