@@ -137,8 +137,10 @@ namespace containers {
         T& read(size_t size, size_t n) {
             assert(n < size);
             assert(blocks_);
-            auto index = n >> log2(block::capacity());
+            auto index = n >> (log2(block::capacity()) - 1);
             auto offset = n & (block::capacity() - 1);
+            //auto index = n / block::capacity();
+            //auto offset = n - index * block::capacity();
             return (*map_->blocks[index])[offset];
         }
     public:
