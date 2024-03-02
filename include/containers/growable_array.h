@@ -225,5 +225,6 @@ namespace containers {
         }
 
         size_t push_back(const T& value) { return emplace_back(value); }
+        size_t push_back(T&& value) { return emplace_back(std::move(value)); }
     };
 }
