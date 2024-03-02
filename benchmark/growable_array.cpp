@@ -21,7 +21,7 @@ template< typename Container > static void container_push_back_locked(benchmark:
         Container container;
         for (size_t i = 0; i < state.range(); ++i) {
             std::lock_guard lock(mutex);
-            container.push_back(i);
+            container.emplace_back(i);
         }
     }
     state.SetItemsProcessed(state.iterations() * state.range());
@@ -31,7 +31,7 @@ template< typename Container > static void container_push_back(benchmark::State&
     for (auto _ : state) {
         Container container;
         for (size_t i = 0; i < state.range(); ++i)
-            container.push_back(i);
+            container.emplace_back(i);
     }
     state.SetItemsProcessed(state.iterations() * state.range());
 }
@@ -75,10 +75,10 @@ template< typename Container > static void container_indexed_access_locked(bench
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK_TEMPLATE(container_push_back_locked, std::vector<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_push_back_locked, std::deque<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access, containers::growable_array<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access_local, containers::growable_array<int>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access_locked, std::deque<int>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back_locked, std::vector<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back_locked, std::deque<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_indexed_access, containers::growable_array<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_indexed_access_local, containers::growable_array<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_indexed_access_locked, std::deque<size_t>)->Range(1, N);
 //BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);

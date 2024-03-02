@@ -43,6 +43,7 @@ namespace containers {
     };
 #endif
 
+    // Single writer, multiple readers dynamic append-only array.
     template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 8, size_t BlocksGrowFactor = 16 >
     class growable_array: Allocator {
         struct block_trivially_destructible {
@@ -53,9 +54,9 @@ namespace containers {
                 return BlockSize;
             }
 
-            template< typename Ty > void push_back(Ty&& value) {
+            template< typename... Args > void emplace_back(Args&&... args) {
                 assert(size_ < capacity());
-                new (at(size_++)) T(std::forward<Ty>(value));
+                new (at(size_++)) T{std::forward<Args>(args)...};
             }
 
             T& operator[](size_t n) {
@@ -95,14 +96,29 @@ namespace containers {
             block* blocks[0];
         };
 
+        template< typename U > struct stack {
+            void push(U* value) {
+                value->next = head_.next;
+                head_.next = value;
+            }
+
+            U* pop() {
+                U* value = head_.next;
+                head_.next = value ? value->next : nullptr;
+                return value;
+            }
+
+        private:
+            U head_;
+        };
+
         alignas(64) std::atomic<size_t> size_ = 0;
 
         alignas(64) block_map* map_ = nullptr;
 
         alignas(64) size_t map_size_ = 0;
         size_t map_capacity_ = 0;
-        
-        block_map retired_maps_;
+        stack<block_map> retired_maps_;
 
         //template< typename U > U* allocate(size_t n) {
             //typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
@@ -151,12 +167,10 @@ namespace containers {
                 std::free(map_);
                 map_ = nullptr;
                 map_capacity_ = 0;
+                size_.store(0, std::memory_order_relaxed);
 
-                block_map* retired = retired_maps_.next;
-                while (retired) {
-                    block_map* next = retired->next;
+                while (auto* retired = retired_maps_.pop()) {
                     std::free(retired);
-                    retired = next;
                 }
             }
         }
@@ -175,15 +189,18 @@ namespace containers {
             return read(state.size, n);
         }
 
-        size_t size() const { return size_.load(std::memory_order_relaxed); }
+        size_t size() const { return size_.load(std::memory_order_acquire); }
+        size_t empty() const { return size_.load(std::memory_order_acquire) == 0; }
 
-        template< typename Ty > void push_back(Ty&& value) {
+        template< typename... Args > size_t emplace_back(Args&&... args) {
             if (map_) {
                 assert(map_size_ > 0);
                 if (map_->blocks[map_size_ - 1]->size() < block::capacity()) {
             insert:
-                    map_->blocks[map_size_ - 1]->push_back(std::forward<Ty>(value));
-                    size_.store(size_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+                    map_->blocks[map_size_ - 1]->emplace_back(std::forward<Args>(args)...);
+                    size_t size = size_.load(std::memory_order_relaxed) + 1; 
+                    size_.store(size, std::memory_order_release);
+                    return size;
                 } else {
                     if (map_size_ < map_capacity_) {
                         map_->blocks[map_size_++] = new block(); // allocate<block>(1);
@@ -191,8 +208,7 @@ namespace containers {
                     } else {
                         auto map = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * map_capacity_ * BlocksGrowFactor);
                         std::memcpy(map->blocks, map_->blocks, sizeof(block*) * map_capacity_);
-                        map_->next = retired_maps_.next;
-                        retired_maps_.next = map_;
+                        retired_maps_.push(map_);
                         map_ = map;
                         map_capacity_ *= BlocksGrowFactor;
                         map_->blocks[map_size_++] = new block(); // allocate<block>(1);
@@ -207,5 +223,7 @@ namespace containers {
                 goto insert;
             }
         }
+
+        size_t push_back(const T& value) { return emplace_back(value); }
     };
 }
