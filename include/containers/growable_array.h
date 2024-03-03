@@ -46,9 +46,7 @@ namespace containers {
     // Single writer, multiple readers dynamic append-only array.
     template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 8, size_t BlocksGrowFactor = 2 >
     class growable_array: Allocator {
-        struct block_trivially_destructible {
-            //static_assert(std::is_trivially_destructible_v<T>);
-
+        struct block {
             static constexpr size_t capacity() {
                 static_assert((BlockSize & (BlockSize - 1)) == 0);
                 return BlockSize;
@@ -64,6 +62,14 @@ namespace containers {
 
             T* begin() { return at(0); }
 
+            void destroy(size_t size) {
+                if (size > 0) {
+                    do {
+                        this->at(--size)->~T();
+                    } while (size);
+                }
+            }
+
         protected:
             T* at(size_t n) {
                 T* ptr = reinterpret_cast<T*>(storage_.data()) + n;
@@ -73,20 +79,6 @@ namespace containers {
 
             std::array<uint8_t, sizeof(T) * capacity()> storage_;
         };
-
-        struct block_destructible: block_trivially_destructible {
-            //static_assert(std::is_trivially_destructible_v<T>);
-
-            ~block_destructible() {
-                //if (this->size_ > 0) {
-                //    do {
-                //        this->at(--this->size_)->~T();
-                //    } while (this->size_);
-                //}
-            }
-        };
-
-        using block = std::conditional_t< std::is_trivially_destructible_v<T>, block_trivially_destructible, block_destructible >;
 
         struct block_map {
             block_map* next = 0;
@@ -156,10 +148,14 @@ namespace containers {
             if (map_size_ > 0) {
                 auto map = maps_.pop();
                 assert(map);
+                auto size = size_.exchange(0, std::memory_order_relaxed);
                 do {
                     --map_size_;
-                    if (!std::is_trivially_destructible_v<block>)
-                        map->blocks[map_size_]->~block();
+                    if (!std::is_trivially_destructible_v<T>) {
+                        auto count = size & (block::capacity() - 1);
+                        map->blocks[map_size_]->destroy(count);
+                        size -= count;
+                    }
                     //deallocate<block>(map_[map_size_], 1);
                     delete map->blocks[map_size_];
                 } while (map_size_);
@@ -168,9 +164,8 @@ namespace containers {
                 std::free(map);
                 map_capacity_ = 0;
                 map_size_ = 0;
-                size_.store(0, std::memory_order_relaxed);
-
-                while (map = maps_.pop()) {
+                
+                while ((map = maps_.pop())) {
                     std::free(map);
                 }
             }
