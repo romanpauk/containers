@@ -95,8 +95,13 @@ namespace containers {
 
         template< typename U > struct stack {
             void push(U* value) {
+                assert(value);
                 value->next = head_.next;
                 head_.next = value;
+            }
+
+            U* top() {
+                return head_.next; 
             }
 
             U* pop() {
@@ -110,10 +115,9 @@ namespace containers {
         };
 
         std::atomic<size_t> size_ = 0;
-        block_map* map_ = nullptr;
         size_t map_size_ = 0;
         size_t map_capacity_ = 0;
-        stack<block_map> retired_maps_;
+        stack<block_map> maps_;
 
         //template< typename U > U* allocate(size_t n) {
             //typename std::allocator_traits<Allocator>::template rebind_alloc<U> allocator(*this);
@@ -134,7 +138,7 @@ namespace containers {
             assert(map_);
             auto index = n >> (log2(block::capacity()) - 1);
             auto offset = n & (block::capacity() - 1);
-            return (*map_->blocks[index])[offset];
+            return (*maps_.top()->blocks[index])[offset];
         }
     public:
         using value_type = T;
@@ -150,23 +154,24 @@ namespace containers {
 
         void clear() {
             if (map_size_ > 0) {
+                auto map = maps_.pop();
+                assert(map);
                 do {
                     --map_size_;
                     if (!std::is_trivially_destructible_v<block>)
-                        map_->blocks[map_size_]->~block();
+                        map->blocks[map_size_]->~block();
                     //deallocate<block>(map_[map_size_], 1);
-                    delete map_->blocks[map_size_];
+                    delete map->blocks[map_size_];
                 } while (map_size_);
                 
                 // deallocate<block*>(map_, map_capacity_);
-                std::free(map_);
-                map_ = nullptr;
+                std::free(map);
                 map_capacity_ = 0;
                 map_size_ = 0;
                 size_.store(0, std::memory_order_relaxed);
 
-                while (auto* retired = retired_maps_.pop()) {
-                    std::free(retired);
+                while (map = maps_.pop()) {
+                    std::free(map);
                 }
             }
         }
@@ -193,31 +198,31 @@ namespace containers {
             size_t index = size >> (log2(block::capacity()) - 1);
             size_t offset = size & (block::capacity() - 1);
 
-            if (map_) {
+            if (maps_.top()) {
                 assert(map_size_ > 0);
                 if (index < map_size_) {
                 insert:
-                    map_->blocks[index]->emplace(
-                        map_->blocks[index]->begin() + offset, std::forward<Args>(args)...);
+                    maps_.top()->blocks[index]->emplace(
+                        maps_.top()->blocks[index]->begin() + offset, std::forward<Args>(args)...);
                     size_.store(size + 1, std::memory_order_release);
                     return size + 1;
                 } else if (map_size_ < map_capacity_) {
-                    map_->blocks[map_size_++] = new block(); // allocate<block>(1);
+                    maps_.top()->blocks[map_size_++] = new block(); // allocate<block>(1);
                     goto insert;
                 } else {
                     auto map = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * map_capacity_ * BlocksGrowFactor);
-                    std::memcpy(map->blocks, map_->blocks, sizeof(block*) * map_capacity_);
-                    retired_maps_.push(map_);
-                    map_ = map;
+                    std::memcpy(map->blocks, maps_.top()->blocks, sizeof(block*) * map_capacity_);
+                    map->blocks[map_size_++] = new block(); // allocate<block>(1);
                     map_capacity_ *= BlocksGrowFactor;
-                    map_->blocks[map_size_++] = new block(); // allocate<block>(1);
+                    maps_.push(map);
                     goto insert;
                 }
             } else {
-                map_ = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * BlocksGrowFactor);
-                map_->blocks[0] = new block(); //allocate<block>(1);
+                auto map = (block_map*)std::malloc(sizeof(block_map) + sizeof(block*) * BlocksGrowFactor);
+                map->blocks[0] = new block(); //allocate<block>(1);
                 map_size_ = 1;
                 map_capacity_ = BlocksGrowFactor;
+                maps_.push(map);
                 goto insert;
             }
         }
