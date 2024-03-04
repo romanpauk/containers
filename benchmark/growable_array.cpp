@@ -6,6 +6,7 @@
 //
 
 #include <containers/growable_array.h>
+#include <containers/mmapped_array.h>
 
 #include <benchmark/benchmark.h>
 #include <deque>
@@ -79,6 +80,7 @@ template< typename Container > static void container_indexed_access_locked(bench
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
+
 BENCHMARK_TEMPLATE(container_push_back_locked, std::vector<size_t>)->Range(1, N);
 BENCHMARK_TEMPLATE(container_push_back_locked, std::vector<std::string>)->Range(1, N);
 
@@ -88,13 +90,13 @@ BENCHMARK_TEMPLATE(container_push_back_locked, std::deque<std::string>)->Range(1
 BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<size_t>)->Range(1, N);
 BENCHMARK_TEMPLATE(container_push_back, containers::growable_array<std::string>)->Range(1, N);
 
+BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<size_t>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<std::string>)->Range(1, N);
+
 BENCHMARK_TEMPLATE(container_indexed_access, containers::growable_array<size_t>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access, containers::growable_array<std::string>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_indexed_access, containers::mmapped_array<size_t>)->Range(1, N);
 
 BENCHMARK_TEMPLATE(container_indexed_access_local, containers::growable_array<size_t>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access_local, containers::growable_array<std::string>)->Range(1, N);
+BENCHMARK_TEMPLATE(container_indexed_access_local, containers::mmapped_array<size_t>)->Range(1, N);
 
 BENCHMARK_TEMPLATE(container_indexed_access_locked, std::deque<size_t>)->Range(1, N);
-BENCHMARK_TEMPLATE(container_indexed_access_locked, std::deque<std::string>)->Range(1, N);
-
-//BENCHMARK_TEMPLATE(container_push_back, containers::mmapped_array<int>)->Range(1, N);

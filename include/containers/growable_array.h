@@ -16,35 +16,9 @@
 #include <cstdlib>
 #include <cstring>
 
-#if defined(__linux__)
-#include <sys/mman.h>
-#endif
-
 namespace containers {
-
-#if defined(__linux__)
-    template< typename T, size_t Capacity = 1 << 30 > class mmapped_array {
-        static constexpr size_t capacity_ = Capacity;
-        size_t size_ = 0;
-        void* data_ = nullptr;
-
-    public:
-        ~mmapped_array() { munmap(data_, capacity_); }
-
-        template< typename Ty > void push_back(Ty&& value) {
-            if (!data_) {
-                data_ = mmap(0, capacity_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                if ((uintptr_t)data_ == -1)
-                    std::abort();
-            }
-
-            new(reinterpret_cast<T*>(data_) + size_++) T(std::forward<Ty>(value));
-        }
-    };
-#endif
-
     // Single writer, multiple readers dynamic append-only array.
-    template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 8, size_t BlocksGrowFactor = 2 >
+    template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 10, size_t BlocksGrowFactor = 2 >
     class growable_array: Allocator {
         struct block {
             static constexpr size_t capacity() {
