@@ -1,11 +1,35 @@
 cmake_minimum_required(VERSION 3.22)
 project(containers VERSION 0.1)
+enable_testing()
 include(FetchContent)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_CXX_EXTENSIONS NO)
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-enable_testing()
+set(CMAKE_CXX_EXTENSIONS OFF)
+include(cmake/clang-format.cmake)
+if(WIN32)
+    include(cmake/group-sources.cmake)
+endif()
+include(cmake/md.cmake)
+include(cmake/sanitizers.cmake)
+
+sanitizers_init(CONTAINERS)
+
+# TODO: g++ -Wall -Wextra -Wpedantic -Q --help=warning | grep disabled
+set(CONTAINERS_WARNINGS_GCC
+    -Wall
+    # -Wpedantic - VLA support
+    -Wextra 
+    -Wshadow
+    -Wno-unused-variable 
+    -Wno-gnu-zero-variadic-macro-arguments
+)
+
+set(CONTAINERS_WARNINGS_MSVC
+    /W4
+    /wd4101 # unreferenced local variable
+    /wd4702 # unreachable code
+)
+
 option(CONTAINERS_ENABLE_TESTING "enable testing through googletest" ON)
 option(CONTAINERS_ENABLE_BENCHMARK "enable benchmarking through googlebenchmark" ON)
 
@@ -83,6 +107,9 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     if(MSVC)
         target_compile_definitions(containers_benchmark PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
     endif()
+
+    target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
+    target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
 endif()
 
 if(CONTAINERS_ENABLE_TESTING)
@@ -104,4 +131,9 @@ if(CONTAINERS_ENABLE_TESTING)
     if(MSVC)
         target_compile_definitions(containers_test PRIVATE -D_ENABLE_EXTENDED_ALIGNED_STORAGE)
     endif()
+
+    target_compile_options(containers_test PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
+    target_compile_options(containers_test PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
+
+    target_sanitize(CONTAINERS containers_test)
 endif()

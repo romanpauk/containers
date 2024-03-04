@@ -29,6 +29,7 @@ namespace containers {
 
         T& read(size_t size, size_t n) {
             assert(n < size);
+            (void)size;
             T* ptr = at(n);
             return *ptr;
         }
@@ -43,7 +44,7 @@ namespace containers {
 
         mmapped_array() {
             data_ = mmap(0, capacity_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if ((uintptr_t)data_ == -1)
+            if ((uintptr_t)data_ == (uintptr_t)-1)
                 std::abort();
 
             madvise(data_, capacity_, MADV_WILLNEED);

@@ -18,7 +18,7 @@
 
 namespace containers {
     // Single writer, multiple readers dynamic append-only array.
-    template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 1 << 10, size_t BlocksGrowFactor = 2 >
+    template< typename T, typename Allocator = std::allocator<T>, size_t BlockSize = 64, size_t BlocksGrowFactor = 8 >
     class growable_array: Allocator {
         struct block {
             static constexpr size_t capacity() {
@@ -102,6 +102,7 @@ namespace containers {
         T& read(size_t size, size_t n) {
             assert(n < size);
             assert(map_);
+            (void)size;
             auto index = n >> (log2(block::capacity()) - 1);
             auto offset = n & (block::capacity() - 1);
             return (*maps_.top()->blocks[index])[offset];
