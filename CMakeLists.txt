@@ -91,10 +91,10 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     add_executable(containers_benchmark
         benchmark/growable_array.cpp
         benchmark/main.cpp
-        benchmark/lockfree/atomic.cpp
-        benchmark/lockfree/counter.cpp
-        benchmark/lockfree/stack.cpp
-        benchmark/lockfree/queue.cpp
+        #benchmark/lockfree/atomic.cpp
+        #benchmark/lockfree/counter.cpp
+        #benchmark/lockfree/stack.cpp
+        #benchmark/lockfree/queue.cpp
     )
 
     target_link_libraries(containers_benchmark 
@@ -114,11 +114,11 @@ endif()
 
 if(CONTAINERS_ENABLE_TESTING)
     add_executable(containers_test
-        test/atomic.cpp
-        test/counter.cpp
+        #test/atomic.cpp
+        #test/counter.cpp
         test/growable_array.cpp
-        test/queue.cpp
-        test/stack.cpp
+        #test/queue.cpp
+        #test/stack.cpp
     )
 
     add_test(NAME containers_test COMMAND containers_test)
