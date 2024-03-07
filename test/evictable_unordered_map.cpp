@@ -5,13 +5,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 
-#include <containers/cache/lru.h>
+#include <containers/evictable_unordered_map.h>
 
 #include <gtest/gtest.h>
 
 TEST(lru, basic_operations) {
 
-    containers::lru_unordered_map< int, int > cache;
+    containers::evictable_unordered_map< int, int > cache;
     ASSERT_EQ(cache.evictable(), cache.end());
     cache.emplace(1, 100);
     ASSERT_EQ(cache.evictable()->first, 1);

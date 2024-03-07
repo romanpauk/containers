@@ -65,7 +65,7 @@ target_include_directories(containers INTERFACE include)
 
 target_sources(containers INTERFACE
     include/containers/growable_array.h
-    include/containers/cache/lru.h
+    include/containers/evictable_unordered_map.h
     include/containers/lockfree/atomic.h
     include/containers/lockfree/bounded_queue.h
     include/containers/lockfree/bounded_queue_bbq.h
@@ -117,8 +117,8 @@ if(CONTAINERS_ENABLE_TESTING)
     add_executable(containers_test
         #test/atomic.cpp
         #test/counter.cpp
-        test/growable_array.cpp
-        test/lru.cpp
+        test/evictable_unordered_map.cpp
+        test/growable_array.cpp        
         #test/queue.cpp
         #test/stack.cpp
     )
