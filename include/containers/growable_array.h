@@ -63,7 +63,7 @@ namespace containers {
     template< 
         typename T, 
         typename Allocator = std::allocator<T>, 
-        size_t BlockSize = 64, 
+        size_t BlockSize = 128, 
         size_t BlocksGrowFactor = 8,
         typename Block = detail::growable_array_block<T, BlockSize> >
     class growable_array: detail::compressed_tuple<
@@ -134,17 +134,17 @@ namespace containers {
         };
 
         growable_array() = default;
-        growable_array(Allocator& allocator): detail::compressed_tuple<
+        growable_array(Allocator allocator): detail::compressed_tuple<
             typename std::allocator_traits<Allocator>::template rebind_alloc<Block>,
             typename std::allocator_traits<Allocator>::template rebind_alloc<uint8_t>
         >(allocator) {} 
 
+        growable_array(const growable_array&) = delete;
+        growable_array& operator = (const growable_array&) = delete;
+      
         ~growable_array() {
             clear();
         }
-
-        growable_array(const growable_array&) = delete;
-        growable_array& operator = (const growable_array&) = delete;
         
         void clear() {
             if (map_size_ > 0) {
