@@ -133,8 +133,6 @@ namespace containers {
                 }
             }
 
-            void find(const node&) {}
-
             void touch(const node& n) {
                 list_.erase(n);
                 list_.push_front(n);
@@ -175,8 +173,6 @@ namespace containers {
                     segments_[1].push_front(n);
                 }
             }
-
-            void find(const node&) {}
 
             void touch(const node& n) {
                 n.segment->erase(n);
@@ -251,7 +247,7 @@ namespace containers {
             // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
             auto it = values_.find({ {key, Value()} });
             if (it != values_.end())
-                cache_.find(*it);
+                cache_.touch(*it);
             return it;
         }
 
