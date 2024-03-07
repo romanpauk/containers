@@ -110,8 +110,8 @@ namespace containers {
             struct node {
                 using value_type = T;
                 value_type value;
-                mutable const node* next;
-                mutable const node* prev;
+                mutable const node* next = nullptr;
+                mutable const node* prev = nullptr;
             };
 
             using iterator = typename linked_list<node>::iterator;
@@ -148,9 +148,9 @@ namespace containers {
             struct node {
                 using value_type = T;
                 value_type value;
-                mutable linked_list<node>* segment;
-                mutable const node* next;
-                mutable const node* prev;
+                mutable linked_list<node>* segment = nullptr;
+                mutable const node* next = nullptr;
+                mutable const node* prev = nullptr;
             };
 
             using iterator = typename linked_list<node>::iterator;
@@ -215,9 +215,9 @@ namespace containers {
         using values_type = std::unordered_set< node_type, hash, key_equal,
             typename std::allocator_traits< Allocator >::template rebind_alloc< node_type > >;
 
-        values_type values_;
         cache_type cache_;
-
+        values_type values_;
+        
     public:
         struct iterator {
             iterator(typename values_type::iterator it): it_(it) {}
@@ -275,8 +275,8 @@ namespace containers {
         }
 
         void clear() {
-            values_.clear();
             cache_.clear();
+            values_.clear();
         }
 
         size_t size() const { return values_.size(); }

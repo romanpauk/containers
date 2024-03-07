@@ -90,6 +90,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     FetchContent_MakeAvailable(concurrentqueue)
 
     add_executable(containers_benchmark
+        benchmark/evictable_unordered_map.cpp
         benchmark/growable_array.cpp
         benchmark/main.cpp
         #benchmark/lockfree/atomic.cpp
