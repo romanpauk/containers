@@ -183,6 +183,25 @@ namespace containers {
         private:
             linked_list<node> segments_[2];
         };
+
+        template< typename Node, typename Key, bool IsTriviallyDestructible = std::is_trivially_destructible_v<Key> > struct hashable_node;
+        
+        template< typename Node, typename Key> struct hashable_node<Node, Key, true> {
+            hashable_node(const Key& key) {
+                new (const_cast<Key*>(&node().value.first)) Key(key);
+            }
+
+            Node& node() { return *reinterpret_cast<Node*>(&storage_); }
+        private:
+            std::aligned_storage_t< sizeof(Node) > storage_;
+        };
+
+        template< typename Node, typename Key > struct hashable_node<Node, Key, false>
+            : hashable_node<Node, Key, true> 
+        {
+            hashable_node(const Key& key): hashable_node<Node, Key, true>(key) {}
+            ~hashable_node() { const_cast<Key*>(&this->node().value.first)->~Key(); }
+        };
     };
 
     template<
@@ -245,7 +264,9 @@ namespace containers {
 
         iterator find(const Key& key) {
             // TODO: this is solved by heterogenous hashing in C++20, what about C++17?
-            auto it = values_.find({ {key, Value()} });
+            // This still needs to copy the key, at least not the value.
+            detail::hashable_node<node_type, Key> key_node(key);
+            auto it = values_.find(key_node.node());
             if (it != values_.end())
                 cache_.touch(*it);
             return it;
