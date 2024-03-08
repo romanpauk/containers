@@ -103,6 +103,8 @@ namespace containers {
 
         std::atomic<size_t> size_ = 0;
         size_t map_size_ = 0;
+        std::atomic<block_map*> map_ = nullptr;
+
         stack<block_map> maps_;
 
         auto& block_allocator() { return this->template get<0>(); }
@@ -119,11 +121,11 @@ namespace containers {
 
         T& read(size_t size, size_t n) {
             assert(n < size);
-            assert(maps_.top());
+            assert(map_.load(std::memory_order_relaxed));
             (void)size;
             auto index = n >> (detail::log2(BlockSize) - 1);
             auto offset = n & (BlockSize - 1);
-            return (*maps_.top()->blocks[index])[offset];
+            return (*map_.load(std::memory_order_relaxed)->blocks[index])[offset];
         }
     public:
         using value_type = T;
@@ -148,7 +150,7 @@ namespace containers {
         
         void clear() {
             if (map_size_ > 0) {
-                auto map = maps_.pop();
+                auto map = map_.load(std::memory_order_relaxed);
                 assert(map);
                 auto size = size_.exchange(0, std::memory_order_relaxed);
                 do {
@@ -192,33 +194,39 @@ namespace containers {
             size_t index = size >> (detail::log2(BlockSize) - 1);
             size_t offset = size & (BlockSize - 1);
 
-            if (maps_.top()) {
-                assert(map_size_ > 0);
+            if (map_size_) {
+                auto map = map_.load(std::memory_order_relaxed);
+                assert(map);
                 if (index < map_size_) {
                 insert:
-                    maps_.top()->blocks[index]->emplace(
-                        maps_.top()->blocks[index]->begin() + offset, std::forward<Args>(args)...);
+                    map->blocks[index]->emplace(
+                        map->blocks[index]->begin() + offset, std::forward<Args>(args)...);
                     size_.store(size + 1, std::memory_order_release);
                     return size + 1;
-                } else if (map_size_ < maps_.top()->capacity_) {
-                    maps_.top()->blocks[map_size_++] = allocate_block();
+                } else if (map_size_ < map->capacity_) {
+                    map->blocks[map_size_++] = allocate_block();
                     goto insert;
                 } else {
-                    auto capacity = maps_.top()->capacity_;
-                    auto map = allocate_block_map(capacity * BlocksGrowFactor);
-                    std::memcpy(map->blocks, maps_.top()->blocks, sizeof(block_type*) * capacity);
-                    map->blocks[map_size_++] = allocate_block();
-                    map->capacity_ = capacity * BlocksGrowFactor;
+                    auto capacity = map->capacity_;
+                    auto new_map = allocate_block_map(capacity * BlocksGrowFactor);
+                    std::memcpy(new_map->blocks, map->blocks, sizeof(block_type*) * capacity);
+                    new_map->blocks[map_size_++] = allocate_block();
+                    new_map->capacity_ = capacity * BlocksGrowFactor;
                     maps_.push(map);
+                    map_.store(new_map, std::memory_order_relaxed);
+                    map = new_map;
                     goto insert;
                 }
             } else {
-                auto map = allocate_block_map(BlocksGrowFactor);
-                map->blocks[0] = allocate_block();
+                auto new_map = allocate_block_map(BlocksGrowFactor);
+                new_map->blocks[0] = allocate_block();
+                new_map->capacity_ = BlocksGrowFactor;
+                new_map->blocks[0]->emplace(new_map->blocks[0]->begin(), std::forward<Args>(args)...);
+                
+                map_.store(new_map, std::memory_order_relaxed);
                 map_size_ = 1;
-                map->capacity_ = BlocksGrowFactor;
-                maps_.push(map);
-                goto insert;
+                size_.store(1, std::memory_order_release);
+                return 1;
             }
         }
 
