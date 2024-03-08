@@ -273,6 +273,10 @@ namespace containers {
         }
 
         Value& operator[](const Key& key) {
+            auto it = find(key);
+            if (it != end()) {
+                return const_cast<Value&>(it->second); // TODO: const_cast
+            }
             return const_cast<Value&>(emplace(key, Value()).first->second);
         }
 
