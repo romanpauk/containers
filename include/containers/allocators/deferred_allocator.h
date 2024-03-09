@@ -21,6 +21,8 @@ namespace containers::detail {
             size_t size = 0;
         };
 
+        struct thread_guard {};
+
         template< typename U > struct stack {
             void push(U* value) {
                 assert(value);
@@ -55,6 +57,8 @@ namespace containers::detail {
             reset();
         }
 
+        thread_guard enter() { return {}; }
+        
         T* allocate(size_t n) {
             static_assert(sizeof(buffer) == 16);
             buffer* ptr = (buffer*)AllocatorBase::allocate(sizeof(buffer) + sizeof(T) * n);

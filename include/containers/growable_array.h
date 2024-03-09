@@ -98,6 +98,9 @@ namespace containers {
         }
 
         T& read(size_t size, size_t n) {
+            auto guard = byte_allocator().enter();
+            (void)guard;
+
             assert(n < size);
             assert(map_.load(std::memory_order_relaxed));
             (void)size;
@@ -167,6 +170,9 @@ namespace containers {
             size_t size = size_.load(std::memory_order_relaxed); 
             size_t index = size >> (detail::log2(BlockSize) - 1);
             size_t offset = size & (BlockSize - 1);
+
+            auto guard = byte_allocator().enter();
+            (void)guard;
 
             if (map_size_) {
                 auto map = map_.load(std::memory_order_relaxed);
