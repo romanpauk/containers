@@ -23,6 +23,35 @@ namespace containers::detail {
 
         struct thread_guard {};
 
+#if 1
+        template< typename U > class stack {
+            template< typename V > struct wide_ptr {
+                V* ptr;
+                uint64_t counter;
+            };
+
+            static_assert(sizeof(wide_ptr<U>) == 16);
+            alignas(16) std::atomic< wide_ptr<U> > head_{};
+        public:
+            void push(U* head) {
+                auto old_head = head_.load(std::memory_order_relaxed);
+                while (true) {
+                    head->next = old_head.ptr;
+                    if(head_.compare_exchange_weak(old_head, {head, old_head.counter + 1}))
+                        return;
+                }
+            }
+
+            U* pop() {
+                auto old_head = head_.load(std::memory_order_relaxed);
+                while (old_head.ptr) {
+                    if (head_.compare_exchange_weak(old_head, {old_head.ptr->next, old_head.counter + 1}))
+                        return old_head.ptr;
+                }
+                return nullptr;
+            }
+        };
+#else
         template< typename U > struct stack {
             void push(U* value) {
                 assert(value);
@@ -43,6 +72,7 @@ namespace containers::detail {
         private:
             U head_;
         };
+#endif
 
         buffer* buffer_cast(T* ptr) {
             return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - sizeof(buffer));
@@ -58,7 +88,7 @@ namespace containers::detail {
         }
 
         thread_guard enter() { return {}; }
-        
+
         T* allocate(size_t n) {
             static_assert(sizeof(buffer) == 16);
             buffer* ptr = (buffer*)AllocatorBase::allocate(sizeof(buffer) + sizeof(T) * n);
