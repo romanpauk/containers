@@ -192,9 +192,9 @@ namespace containers {
                 new (const_cast<Key*>(&node().value.first)) Key(key);
             }
 
-            Node& node() { return *reinterpret_cast<Node*>(&storage_); }
+            const Node& node() { return *reinterpret_cast<Node*>(&storage_); }
         private:
-            std::aligned_storage_t< sizeof(Node) > storage_;
+            std::aligned_storage_t< sizeof(Node), alignof(Node) > storage_;
         };
 
         template< typename Node, typename Key > struct hashable_node<Node, Key, false>
