@@ -26,7 +26,7 @@ public:
     #if defined(_WIN32)
         return reinterpret_cast<T*>(VirtualAlloc(0, sizeof(T) * n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     #else
-        return reinterpret_cast<T*>(mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+        return mmap(0, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
     #endif
     }
 
@@ -35,7 +35,7 @@ public:
         (void)n;
         VirtualFree(p, 0, MEM_RELEASE);
     #else
-        munmap(p, n);
+        return munmap(p, n);
     #endif
     }
 };

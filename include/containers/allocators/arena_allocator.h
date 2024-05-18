@@ -12,8 +12,6 @@
 
 #if defined(_WIN32)
 #include <immintrin.h>
-#else
-#include <sys/mman.h>
 #endif
 
 namespace containers {
@@ -119,7 +117,7 @@ public:
         : arena_(other.arena_) {}
         
     value_type* allocate(std::size_t n) {
-        return reinterpret_cast<value_type*>(arena_->template allocate<alignof(T)>(sizeof(T) * n));
+        return reinterpret_cast<value_type*>(arena_->allocate<alignof(T)>(sizeof(T) * n));
     }
 
     void deallocate(value_type* p, std::size_t) noexcept {}
