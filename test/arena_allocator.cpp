@@ -11,7 +11,7 @@
 #include <gtest/gtest.h>
 
 TEST(arena_allocator_test, std_allocator) {
-    char buffer[128];
+    uint8_t buffer[128];
     containers::arena<> arena(buffer);
     containers::arena_allocator< char > allocator(arena);
 
@@ -19,7 +19,7 @@ TEST(arena_allocator_test, std_allocator) {
 }
 
 TEST(arena_allocator_test, page_allocator) {
-    char buffer[128];
+    uint8_t buffer[128];
     containers::arena< containers::page_allocator<char> > arena(buffer, sizeof(buffer));
     containers::arena_allocator< char, decltype(arena) > allocator(arena);
 
