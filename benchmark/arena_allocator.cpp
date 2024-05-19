@@ -16,15 +16,16 @@ template< typename Allocator > static void arena_allocator_allocate(benchmark::S
     };
       
     static uint8_t buffer[1<<17];
-        
+    uintptr_t ptr = 0;
     for (auto _ : state) {
         containers::arena< Allocator > arena(buffer);
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
 
         for (size_t i = 0; i < (size_t)state.range(); ++i)
-            allocator.allocate(1);
+            ptr += (uintptr_t)allocator.allocate(1);
     }
 
+    benchmark::DoNotOptimize(ptr);
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
@@ -33,14 +34,16 @@ template< typename Allocator > static void arena_allocator_allocate_nobuffer(ben
         uint8_t data[64];
     };
         
+    uintptr_t ptr = 0;
     for (auto _ : state) {
         containers::arena< Allocator > arena;
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
     
         for (size_t i = 0; i < (size_t)state.range(); ++i)
-            allocator.allocate(1);
+            ptr += (uintptr_t)allocator.allocate(1);
     }
 
+    benchmark::DoNotOptimize(ptr);
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
