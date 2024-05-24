@@ -16,9 +16,11 @@
 #include <sys/mman.h>
 #endif
 
+#include <stdio.h>
+
 namespace containers {
 
-template< typename Allocator = std::allocator<char> > class arena
+template< typename Allocator = std::allocator<uint8_t> > class arena
     : std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>
 {
     using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>;
@@ -36,9 +38,9 @@ template< typename Allocator = std::allocator<char> > class arena
     static_assert(sizeof(block) == 16);
 
     block* head_ = nullptr;
-    uintptr_t block_address_ = 0;
-    std::size_t block_size_ = 0;
-
+    uintptr_t block_ptr_ = 0;
+    uintptr_t block_end_ = 0;
+    
     static uint64_t round_up(uint64_t n) {
     #if defined(_WIN32)
         return n == 1 ? 1 : 1 << (64 - _lzcnt_u64(n - 1));
@@ -62,25 +64,30 @@ template< typename Allocator = std::allocator<char> > class arena
         auto head = allocate_block(block_size);
         head->owned = true;
         head->size = block_size;
-        head->next = head_;
         init_head(head);
     }
 
     void init_head(block* head) {
-        block_address_ = reinterpret_cast<uintptr_t>(head) + sizeof(block);
-        block_size_ = head->size - sizeof(block);
+        block_ptr_ = reinterpret_cast<uintptr_t>(head) + sizeof(block);
+        block_end_ = reinterpret_cast<uintptr_t>(head) + head->size;
+        head->next = head_;
         head_ = head;
     }
     
 public:
     arena() = default;
 
+    template< typename T, std::size_t N > arena(T(&buffer)[N])
+        : arena(reinterpret_cast<uint8_t*>(buffer), N * sizeof(T)) {
+        static_assert(std::is_trivial_v<T>);
+        static_assert(N * sizeof(T) > sizeof(block));
+    }
+
     arena(uint8_t* buffer, std::size_t size) {
         assert(size > sizeof(block));
         auto head = reinterpret_cast<block*>(buffer);
         head->owned = false;
         head->size = size;
-        head->next = nullptr;
         init_head(head);
     }
 
@@ -94,20 +101,22 @@ public:
         }
     }
 
-    template< std::size_t Alignment > uintptr_t allocate(std::size_t bytes) {
+    template< std::size_t Alignment > uintptr_t allocate(const std::size_t bytes) {
     again:
-        uintptr_t block_offset = uintptr_t(block_address_ + Alignment - 1) & ~(Alignment - 1);
-        if (block_offset + bytes - block_address_ > block_size_) {
+        const uintptr_t offset = uintptr_t(block_ptr_ + Alignment - 1) & ~(Alignment - 1);
+        if (offset + bytes > block_end_) {
             request_block(bytes);
             goto again;
         }
 
-        block_address_ = block_offset + bytes;
-        return block_offset;
+        assert((offset & (Alignment - 1)) == 0);
+        block_ptr_ = offset + bytes;
+        return offset;
     }
 };
 
 template <typename T, typename Arena = arena<> > class arena_allocator {
+    template <typename U, typename ArenaU> friend class arena_allocator;
     Arena* arena_ = nullptr;
 public:
     using value_type    = T;
@@ -122,7 +131,7 @@ public:
         return reinterpret_cast<value_type*>(arena_->template allocate<alignof(T)>(sizeof(T) * n));
     }
 
-    void deallocate(value_type* p, std::size_t) noexcept {}
+    void deallocate(value_type*, std::size_t) noexcept {}
 };
 
 template <typename T, typename U, typename Arena>
