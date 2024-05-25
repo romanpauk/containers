@@ -26,18 +26,18 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>;
     using allocator_traits = std::allocator_traits< allocator_type >;
     
-    static constexpr std::size_t BlockSize = 1 << 21;
+    static constexpr std::size_t BlockSize = 1 << 16;
     static_assert((BlockSize & (BlockSize - 1)) == 0);
 
     struct block {
+        block* next;
         std::size_t size:63;
         std::size_t owned:1;
-        block* next;
     };
 
     static_assert(sizeof(block) == 16);
 
-    block* head_ = nullptr;
+    block* block_ = nullptr;
     uintptr_t block_ptr_ = 0;
     uintptr_t block_end_ = 0;
     
@@ -58,20 +58,20 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
         allocator_traits::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
     }
 
-    void request_block(std::size_t size) {
-        std::size_t block_size = round_up(std::max(BlockSize, sizeof(block) + size));
-        assert((block_size & (block_size - 1)) == 0);
-        auto head = allocate_block(block_size);
+    void request_block(std::size_t bytes) {
+        std::size_t size = round_up(std::max(BlockSize, sizeof(block) + bytes));
+        assert((size & (size - 1)) == 0);
+        auto head = allocate_block(size);
         head->owned = true;
-        head->size = block_size;
-        init_head(head);
+        head->size = size;
+        push_block(head);
     }
 
-    void init_head(block* head) {
-        block_ptr_ = reinterpret_cast<uintptr_t>(head) + sizeof(block);
-        block_end_ = reinterpret_cast<uintptr_t>(head) + head->size;
-        head->next = head_;
-        head_ = head;
+    void push_block(block* head) {
+        head->next = block_;
+        block_ = head;
+        block_ptr_ = reinterpret_cast<uintptr_t>(block_) + sizeof(block);
+        block_end_ = reinterpret_cast<uintptr_t>(block_) + block_->size;
     }
     
 public:
@@ -88,11 +88,11 @@ public:
         auto head = reinterpret_cast<block*>(buffer);
         head->owned = false;
         head->size = size;
-        init_head(head);
+        push_block(head);
     }
 
     ~arena() {
-        auto head = head_;
+        auto head = block_;
         while(head) {
             auto next = head->next;
             if (head->owned)
@@ -113,6 +113,8 @@ public:
         block_ptr_ = offset + bytes;
         return offset;
     }
+    
+    static constexpr std::size_t header_size() { return sizeof(block); }
 };
 
 template <typename T, typename Arena = arena<> > class arena_allocator {
