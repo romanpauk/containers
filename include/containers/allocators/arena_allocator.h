@@ -12,13 +12,13 @@
 
 #if defined(_WIN32)
 #include <immintrin.h>
-#else
-#include <sys/mman.h>
 #endif
 
-#include <stdio.h>
-
 namespace containers {
+
+template< typename T > struct arena_allocator_traits {
+    static constexpr std::size_t header_size() { return 32; }
+};
 
 template< typename Allocator = std::allocator<uint8_t> > class arena
     : std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>
@@ -26,7 +26,7 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     using allocator_type = typename std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>;
     using allocator_traits = std::allocator_traits< allocator_type >;
     
-    static constexpr std::size_t BlockSize = 1 << 16;
+    static constexpr std::size_t BlockSize = 1 << 20;
     static_assert((BlockSize & (BlockSize - 1)) == 0);
 
     struct block {
@@ -50,7 +50,9 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     }
 
     block* allocate_block(std::size_t size) {
-        return reinterpret_cast<block*>(allocator_traits::allocate(*this, size));
+        block *ptr = reinterpret_cast<block*>(allocator_traits::allocate(*this, size));
+        assert((reinterpret_cast<uintptr_t>(ptr) & (alignof(block) - 1)) == 0);
+        return ptr;
     }
 
     void deallocate_block(block* ptr) {
@@ -59,8 +61,10 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     }
 
     void request_block(std::size_t bytes) {
-        std::size_t size = round_up(std::max(BlockSize, sizeof(block) + bytes));
+        std::size_t size = round_up(std::max(BlockSize, sizeof(block) + bytes + arena_allocator_traits< allocator_type >::header_size()));
         assert((size & (size - 1)) == 0);
+        size -= arena_allocator_traits< allocator_type >::header_size();
+        assert((size - sizeof(block)) >= bytes);
         auto head = allocate_block(size);
         head->owned = true;
         head->size = size;
