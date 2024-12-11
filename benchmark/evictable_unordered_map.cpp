@@ -18,7 +18,7 @@ static uint8_t buffer[1<<16];
 
 template< typename Container > static void container_emplace(benchmark::State& state) {
     for (auto _ : state) {
-        containers::arena arena(buffer);
+        containers::arena arena(buffer, 1<<20);
         containers::arena_allocator<void> allocator(arena);
 
         Container container(allocator);
@@ -41,7 +41,7 @@ template< typename Container > static void container_find(benchmark::State& stat
             result &= container.find(i) != container.end();
         }
     }
-    
+
     state.SetItemsProcessed(result ? state.iterations() * state.range() : 0);
 }
 
@@ -57,7 +57,7 @@ template< typename Container > static void container_operator_array(benchmark::S
             result &= container[i];
         }
     }
-    
+
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
