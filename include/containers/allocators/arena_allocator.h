@@ -75,7 +75,7 @@ public:
     arena(std::size_t block_size_default)
         : block_size_default_(block_size_default)
     {
-        assert((block_size_default & (block_size_default - 1) == 0));
+        assert((block_size_default & (block_size_default - 1)) == 0);
     }
 
     template< typename T, std::size_t N > arena(T(&buffer)[N], std::size_t block_size_default)
@@ -97,10 +97,10 @@ public:
     ~arena() {
         auto head = block_;
         while(head) {
+            assert(!head->owned || head->next);
             auto next = head->next;
             if (head->owned)
                 deallocate_block(head);
-            assert(!head->owned || next);
             head = next;
         }
     }
@@ -114,7 +114,7 @@ public:
             goto again;
         }
 
-        assert((offset & (Alignment - 1)) == 0);
+        assert((offset & (alignment - 1)) == 0);
         block_ptr_ = offset + bytes;
         return offset;
     }
