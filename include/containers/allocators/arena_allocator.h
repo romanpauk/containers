@@ -8,11 +8,9 @@
 #pragma once
 
 #include <cassert>
+#include <cstdlib>
+#include <limits>
 #include <memory>
-
-#if defined(_WIN32)
-#include <immintrin.h>
-#endif
 
 namespace containers {
 
@@ -30,38 +28,27 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
 
     static_assert(sizeof(block) == 16);
 
+    std::size_t block_size_;
     block* block_ = nullptr;
-    std::size_t block_size_default_;
     uintptr_t block_ptr_ = 0;
     uintptr_t block_end_ = 0;
 
-    static uint64_t round_up(uint64_t n) {
-    #if defined(_WIN32)
-        return n == 1 ? 1 : 1 << (64 - _lzcnt_u64(n - 1));
-    #else
-        return n == 1 ? 1 : 1 << (64 - __builtin_clzl(n - 1));
-    #endif
+    bool request_block(intptr_t bytes) {
+        if (std::numeric_limits<intptr_t>::max() - (intptr_t)sizeof(block) < bytes)
+            return false;
+        intptr_t size = std::max<intptr_t>(block_size_, sizeof(block) + bytes);
+        assert(size - (intptr_t)sizeof(block) >= bytes);
+        auto head = allocate_block(size);
+        head->owned = true;
+        head->size = size;
+        push_block(head);
+        return true;
     }
 
     block* allocate_block(std::size_t size) {
         block *ptr = reinterpret_cast<block*>(allocator_traits::allocate(*this, size));
         assert((reinterpret_cast<uintptr_t>(ptr) & (alignof(block) - 1)) == 0);
         return ptr;
-    }
-
-    void deallocate_block(block* ptr) {
-        assert(ptr->owned);
-        allocator_traits::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
-    }
-
-    void request_block(std::size_t bytes) {
-        std::size_t size = round_up(std::max(block_size_default_, sizeof(block) + bytes));
-        assert((size & (size - 1)) == 0);
-        assert((size - sizeof(block)) >= bytes);
-        auto head = allocate_block(size);
-        head->owned = true;
-        head->size = size;
-        push_block(head);
     }
 
     void push_block(block* head) {
@@ -71,15 +58,18 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
         block_end_ = reinterpret_cast<uintptr_t>(block_) + block_->size;
     }
 
-public:
-    arena(std::size_t block_size_default)
-        : block_size_default_(block_size_default)
-    {
-        assert((block_size_default & (block_size_default - 1)) == 0);
+    void deallocate_block(block* ptr) {
+        assert(ptr->owned);
+        allocator_traits::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
     }
 
-    template< typename T, std::size_t N > arena(T(&buffer)[N], std::size_t block_size_default)
-        : arena(reinterpret_cast<uint8_t*>(buffer), N * sizeof(T), block_size_default) {
+public:
+    arena(std::size_t block_size)
+        : block_size_(block_size)
+    {}
+
+    template< typename T, std::size_t N > arena(T(&buffer)[N], std::size_t block_size)
+        : arena(reinterpret_cast<uint8_t*>(buffer), N * sizeof(T), block_size) {
         static_assert(std::is_trivial_v<T>);
         static_assert(N * sizeof(T) > sizeof(block));
     }
@@ -105,26 +95,25 @@ public:
         }
     }
 
-    uintptr_t allocate(std::size_t bytes, std::size_t alignment) {
-        assert((alignment & (alignment - 1)) == 0);
-    again:
-        const uintptr_t offset = uintptr_t(block_ptr_ + alignment - 1) & ~(alignment - 1);
-        if (offset + bytes > block_end_) {
-            request_block(bytes);
-            goto again;
+    void* allocate(intptr_t size, intptr_t alignment) {
+        assert(alignment && (alignment & (alignment - 1)) == 0);
+        intptr_t capacity = block_end_ - block_ptr_ - alignment - 1;
+        if (capacity < size) {
+            if (!request_block(size))
+                return nullptr;
+            assert(size < (intptr_t)(block_end_ - block_ptr_) - alignment - 1);
         }
-
-        assert((offset & (alignment - 1)) == 0);
-        block_ptr_ = offset + bytes;
-        return offset;
+        uintptr_t ptr = (block_ptr_ + alignment - 1) & ~(alignment - 1);
+        block_ptr_ = ptr + size;
+        assert((ptr & (alignment - 1)) == 0);
+        return reinterpret_cast<void*>(ptr);
     }
-
-    static constexpr std::size_t header_size() { return sizeof(block); }
 };
 
 template <typename T, typename Arena = arena<> > class arena_allocator {
     template <typename U, typename ArenaU> friend class arena_allocator;
     Arena* arena_ = nullptr;
+
 public:
     using value_type    = T;
 
@@ -135,6 +124,8 @@ public:
         : arena_(other.arena_) {}
 
     value_type* allocate(std::size_t n) {
+        if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
+            return nullptr;
         return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
     }
 
@@ -143,7 +134,7 @@ public:
 
 template <typename T, typename U, typename Arena>
 bool operator == (const arena_allocator<T, Arena>& lhs, const arena_allocator<U, Arena>& rhs) noexcept {
-    return lhs.arena_ = rhs.arena_;
+    return lhs.arena_ == rhs.arena_;
 }
 
 template <typename T, typename U, typename Arena>
