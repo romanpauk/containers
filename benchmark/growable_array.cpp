@@ -14,7 +14,7 @@
 #include <benchmark/benchmark.h>
 #include <deque>
 #include <vector>
-#include <thread>
+#include <mutex>
 
 #define N 1ull << 20
 

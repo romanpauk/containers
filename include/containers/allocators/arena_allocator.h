@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <stdio.h>
 
 namespace containers {
 
@@ -22,22 +23,20 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
 
     struct block {
         block* next;
-        std::size_t size:63;
-        std::size_t owned:1;
+        std::size_t size;
+        bool owned;
     };
-
-    static_assert(sizeof(block) == 16);
 
     std::size_t block_size_;
     block* block_ = nullptr;
     uintptr_t block_ptr_ = 0;
     uintptr_t block_end_ = 0;
 
-    bool request_block(intptr_t bytes) {
-        if (std::numeric_limits<intptr_t>::max() - (intptr_t)sizeof(block) < bytes)
+    bool request_block(std::size_t bytes) {
+        if (std::numeric_limits<std::size_t>::max() - sizeof(block) < bytes)
             return false;
-        intptr_t size = std::max<intptr_t>(block_size_, sizeof(block) + bytes);
-        assert(size - (intptr_t)sizeof(block) >= bytes);
+        std::size_t size = std::max(block_size_, sizeof(block) + bytes);
+        assert(size - sizeof(block) >= bytes);
         auto head = allocate_block(size);
         head->owned = true;
         head->size = size;
@@ -87,7 +86,7 @@ public:
     ~arena() {
         auto head = block_;
         while(head) {
-            assert(!head->owned || head->next);
+            assert(head->owned || !head->next);
             auto next = head->next;
             if (head->owned)
                 deallocate_block(head);
@@ -95,13 +94,16 @@ public:
         }
     }
 
-    void* allocate(intptr_t size, intptr_t alignment) {
-        assert(alignment && (alignment & (alignment - 1)) == 0);
-        intptr_t capacity = block_end_ - block_ptr_ - alignment - 1;
+    void* allocate(std::size_t size, std::size_t alignment) {
+        assert(alignment);
+        assert((alignment & (alignment - 1)) == 0);
+        std::size_t capacity = block_end_ - block_ptr_ - (alignment - 1);
         if (capacity < size) {
-            if (!request_block(size))
+            if (std::numeric_limits<std::size_t>::max() - (alignment - 1) < size)
                 return nullptr;
-            assert(size < (intptr_t)(block_end_ - block_ptr_) - alignment - 1);
+            if (!request_block(size + (alignment - 1)))
+                return nullptr;
+            assert(size <= block_end_ - block_ptr_ - (alignment - 1));
         }
         uintptr_t ptr = (block_ptr_ + alignment - 1) & ~(alignment - 1);
         block_ptr_ = ptr + size;
@@ -124,7 +126,7 @@ public:
         : arena_(other.arena_) {}
 
     value_type* allocate(std::size_t n) {
-        if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
+        if (std::numeric_limits<std::size_t>::max() / sizeof(T) < n)
             return nullptr;
         return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
     }

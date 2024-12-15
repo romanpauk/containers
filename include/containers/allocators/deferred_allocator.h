@@ -8,17 +8,18 @@
 #pragma once
 
 #include <cassert>
+#include <limits>
 #include <memory>
 
 namespace containers::detail {
-    template< 
-        typename T, 
-        typename Allocator, 
-        typename AllocatorBase = typename std::allocator_traits<Allocator>::template rebind_alloc<uint8_t> 
+    template<
+        typename T,
+        typename Allocator,
+        typename AllocatorBase = typename std::allocator_traits<Allocator>::template rebind_alloc<uint8_t>
     > class deferred_allocator: public AllocatorBase {
         struct buffer {
             buffer* next = nullptr;
-            size_t size = 0;
+            std::size_t size = 0;
         };
 
         template< typename U > struct stack {
@@ -29,7 +30,7 @@ namespace containers::detail {
             }
 
             U* top() {
-                return head_.next; 
+                return head_.next;
             }
 
             U* pop() {
@@ -43,6 +44,7 @@ namespace containers::detail {
         };
 
         buffer* buffer_cast(T* ptr) {
+            assert(ptr);
             return reinterpret_cast<buffer*>(reinterpret_cast<uintptr_t>(ptr) - sizeof(buffer));
         }
 
@@ -55,15 +57,19 @@ namespace containers::detail {
             reset();
         }
 
-        T* allocate(size_t n) {
-            static_assert(sizeof(buffer) == 16);
-            buffer* ptr = (buffer*)AllocatorBase::allocate(sizeof(buffer) + sizeof(T) * n);
+        value_type* allocate(std::size_t n) {
+            if (std::numeric_limits<std::size_t>::max() / sizeof(T) < n)
+                return nullptr;
+            if (std::numeric_limits<std::size_t>::max() - sizeof(buffer) < sizeof(T) * n)
+                return nullptr;
+            std::size_t bytes = sizeof(buffer) + sizeof(T) * n;
+            buffer* ptr = (buffer*)AllocatorBase::allocate(bytes);
             ptr->next = nullptr;
-            ptr->size = sizeof(buffer) + sizeof(T) * n;
+            ptr->size = bytes;
             return reinterpret_cast<T*>(ptr + 1);
         }
-        
-        void reclaim(T* ptr, size_t) {
+
+        void deallocate(value_type* ptr, std::size_t) {
             stack_.push(buffer_cast(ptr));
         }
 
