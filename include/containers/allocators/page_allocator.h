@@ -8,6 +8,9 @@
 #pragma once
 
 #include <cassert>
+#include <cstdint>
+#include <limits>
+#include <memory>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -42,6 +45,14 @@ public:
         munmap(p, sizeof(T) * n);
     #endif
     }
+};
+
+template< typename T > struct allocator_traits;
+template< typename T > struct allocator_traits< page_allocator<T> >
+    : std::allocator_traits< page_allocator<T> >
+{
+    static intptr_t page_size() { return 4096; }
+    static intptr_t header_size() { return 0; }
 };
 
 template <typename T, typename U>
