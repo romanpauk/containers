@@ -76,7 +76,41 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
         allocator_traits_type::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
     }
 
+    void deallocate_blocks(block* end) {
+        auto head = block_head_;
+        while(head != end) {
+            assert(head->owned || !head->next);
+            auto next = head->next;
+            if (head->owned)
+                deallocate_block(head);
+            head = next;
+        }
+    }
+
 public:
+    class resource_mark {
+        arena< Allocator >* arena_;
+        block* block_head_;
+        intptr_t block_ptr_;
+
+    public:
+        resource_mark(arena< Allocator >* arena)
+            : arena_(arena)
+            , block_head_(arena>block_head_)
+            , block_ptr_(arena->block_ptr_)
+        {}
+
+        ~resource_mark() {
+            arena_->deallocate_blocks(block_head_);
+            arena_->block_ptr_ = block_ptr_;
+        }
+
+        resource_mark(const resource_mark&) = delete;
+        resource_mark(resource_mark&&) = delete;
+        resource_mark& operator = (const resource_mark&) = delete;
+        resource_mark& operator = (resource_mark&&) = delete;
+    };
+
     arena(std::size_t block_size)
         : block_size_(block_size)
     {}
@@ -98,14 +132,7 @@ public:
     }
 
     ~arena() {
-        auto head = block_head_;
-        while(head) {
-            assert(head->owned || !head->next);
-            auto next = head->next;
-            if (head->owned)
-                deallocate_block(head);
-            head = next;
-        }
+        deallocate_blocks(nullptr);
     }
 
     void* allocate(intptr_t size, intptr_t alignment) {
@@ -133,6 +160,7 @@ template <typename T, typename Arena = arena<> > class arena_allocator {
 
 public:
     using value_type    = T;
+    using resource_mark_type = typename Arena::resource_mark;
 
     arena_allocator(Arena& arena) noexcept
         : arena_(&arena) {}
@@ -147,6 +175,8 @@ public:
     }
 
     void deallocate(value_type*, std::size_t) noexcept {}
+
+    resource_mark_type resource_mark() { return arena_; }
 };
 
 template <typename T, typename U, typename Arena>
