@@ -36,8 +36,6 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     intptr_t block_ptr_ = 0;
     intptr_t block_end_ = 0;
 
-    static intptr_t page_size() { return 4096; }
-
     bool request_block(intptr_t bytes) {
         // For large blocks, glibc's malloc is aligning large allocations
         // to the multiples of page size, also keeping space for chunk size.
@@ -92,17 +90,21 @@ public:
         arena< Allocator >* arena_;
         block* block_head_;
         intptr_t block_ptr_;
+        intptr_t block_end_;
 
     public:
         resource_mark(arena< Allocator >* arena)
             : arena_(arena)
-            , block_head_(arena>block_head_)
+            , block_head_(arena->block_head_)
             , block_ptr_(arena->block_ptr_)
+            , block_end_(arena->block_end_)
         {}
 
         ~resource_mark() {
             arena_->deallocate_blocks(block_head_);
+            arena_->block_head_ = block_head_;
             arena_->block_ptr_ = block_ptr_;
+            arena_->block_end_ = block_end_;
         }
 
         resource_mark(const resource_mark&) = delete;

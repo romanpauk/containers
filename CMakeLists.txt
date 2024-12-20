@@ -18,9 +18,9 @@ sanitizers_init(CONTAINERS)
 set(CONTAINERS_WARNINGS_GCC
     -Wall
     # -Wpedantic - VLA support
-    -Wextra 
+    -Wextra
     -Wshadow
-    -Wno-unused-variable 
+    -Wno-unused-variable
     -Wno-gnu-zero-variadic-macro-arguments
 )
 
@@ -36,7 +36,7 @@ option(CONTAINERS_ENABLE_BENCHMARK "enable benchmarking through googlebenchmark"
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
     set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache) 
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
 endif(CCACHE_FOUND)
 
 if(CONTAINERS_ENABLE_TESTING)
@@ -54,8 +54,8 @@ endif()
 if(CONTAINERS_ENABLE_BENCHMARK)
     FetchContent_Declare(benchmark
         GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG main) 
-       
+        GIT_TAG main)
+
     set(BENCHMARK_ENABLE_TESTING off)
     FetchContent_MakeAvailable(benchmark)
 endif()
@@ -74,7 +74,7 @@ target_sources(containers INTERFACE
 if(CONTAINERS_ENABLE_BENCHMARK)
     FetchContent_Declare(concurrentqueue
         GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
-        GIT_TAG master) 
+        GIT_TAG master)
     FetchContent_MakeAvailable(concurrentqueue)
 
     add_executable(containers_benchmark
@@ -84,8 +84,8 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         benchmark/main.cpp
     )
 
-    target_link_libraries(containers_benchmark 
-        containers 
+    target_link_libraries(containers_benchmark
+        containers
         benchmark::benchmark
         concurrentqueue
         $<$<PLATFORM_ID:Linux>:atomic>
@@ -104,11 +104,12 @@ if(CONTAINERS_ENABLE_TESTING)
         test/arena_allocator.cpp
         test/evictable_unordered_map.cpp
         test/growable_array.cpp
+        test/thread_arena_allocator.cpp
     )
 
     add_test(NAME containers_test COMMAND containers_test)
-    target_link_libraries(containers_test 
-        containers	
+    target_link_libraries(containers_test
+        containers
         gtest_main
         $<$<PLATFORM_ID:Linux>:atomic>
     )
