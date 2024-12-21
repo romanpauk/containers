@@ -25,3 +25,17 @@ TEST(arena_allocator_test, page_allocator) {
 
     allocator.allocate(128);
 }
+
+TEST(arena_allocator_test, resource_mark) {
+    uint8_t buffer[128];
+    containers::arena< containers::page_allocator<char> > arena(buffer, sizeof(buffer), 1<<20);
+    containers::arena_allocator< char, decltype(arena) > allocator(arena);
+
+    auto alloc = [&]{
+        auto mark = allocator.resource_mark();
+        return allocator.allocate(128);
+    };
+
+    ASSERT_EQ(alloc(), alloc());
+}
+
