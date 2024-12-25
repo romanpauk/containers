@@ -19,6 +19,26 @@ template< typename T > struct allocator_traits: std::allocator_traits< T > {
     static intptr_t header_size() { return sizeof(uintptr_t) * 2; }
 };
 
+template< typename Arena, typename State > class resource_mark {
+    Arena* arena_;
+    State state_;
+
+public:
+    resource_mark(Arena* arena)
+        : arena_(arena)
+        , state_(arena->get_state())
+    {}
+
+    ~resource_mark() {
+        arena_->set_state(state_);
+    }
+
+    resource_mark(const resource_mark&) = delete;
+    resource_mark(resource_mark&&) = delete;
+    resource_mark& operator = (const resource_mark&) = delete;
+    resource_mark& operator = (resource_mark&&) = delete;
+};
+
 template< typename Allocator = std::allocator<uint8_t> > class arena
     : std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>
 {
@@ -31,10 +51,15 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
         uintptr_t owned:1;
     };
 
-    block* block_head_ = nullptr;
     std::size_t block_size_ = 0;
-    intptr_t block_ptr_ = 0;
-    intptr_t block_end_ = 0;
+
+    struct state {
+        block* block_head_ = nullptr;
+        intptr_t block_ptr_ = 0;
+        intptr_t block_end_ = 0;
+    };
+
+    state state_;
 
     bool request_block(intptr_t bytes) {
         // For large blocks, glibc's malloc is aligning large allocations
@@ -63,10 +88,10 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     }
 
     void push_block(block* head) {
-        head->next = block_head_;
-        block_head_ = head;
-        block_ptr_ = reinterpret_cast<intptr_t>(block_head_) + sizeof(block);
-        block_end_ = reinterpret_cast<intptr_t>(block_head_) + block_head_->size;
+        head->next = state_.block_head_;
+        state_.block_head_ = head;
+        state_.block_ptr_ = reinterpret_cast<intptr_t>(head) + sizeof(block);
+        state_.block_end_ = reinterpret_cast<intptr_t>(head) + head->size;
     }
 
     void deallocate_block(block* ptr) {
@@ -75,7 +100,7 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     }
 
     void deallocate_blocks(block* end) {
-        auto head = block_head_;
+        auto head = state_.block_head_;
         while(head != end) {
             assert(head->owned || !head->next);
             auto next = head->next;
@@ -86,32 +111,7 @@ template< typename Allocator = std::allocator<uint8_t> > class arena
     }
 
 public:
-    class resource_mark {
-        arena< Allocator >* arena_;
-        block* block_head_;
-        intptr_t block_ptr_;
-        intptr_t block_end_;
-
-    public:
-        resource_mark(arena< Allocator >* arena)
-            : arena_(arena)
-            , block_head_(arena->block_head_)
-            , block_ptr_(arena->block_ptr_)
-            , block_end_(arena->block_end_)
-        {}
-
-        ~resource_mark() {
-            arena_->deallocate_blocks(block_head_);
-            arena_->block_head_ = block_head_;
-            arena_->block_ptr_ = block_ptr_;
-            arena_->block_end_ = block_end_;
-        }
-
-        resource_mark(const resource_mark&) = delete;
-        resource_mark(resource_mark&&) = delete;
-        resource_mark& operator = (const resource_mark&) = delete;
-        resource_mark& operator = (resource_mark&&) = delete;
-    };
+    using resource_mark_type = resource_mark< arena< Allocator >, state >;
 
     arena(std::size_t block_size)
         : block_size_(block_size)
@@ -139,21 +139,160 @@ public:
 
     void* allocate(intptr_t size, intptr_t alignment) {
         assert((alignment & (alignment - 1)) == 0);
-        intptr_t padding = -(uintptr_t)block_ptr_ & (alignment - 1);
-        intptr_t capacity = block_end_ - block_ptr_ - padding;
+        intptr_t padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+        intptr_t capacity = state_.block_end_ - state_.block_ptr_ - padding;
         if (capacity < size) {
             if (std::numeric_limits<intptr_t>::max() - (alignment - 1) < size)
                 return nullptr;
             if (!request_block(size + (alignment - 1)))
                 return nullptr;
-            padding = -(uintptr_t)block_ptr_ & (alignment - 1);
-            assert(size <= block_end_ - block_ptr_ - padding);
+            padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+            assert(size <= state_.block_end_ - state_.block_ptr_ - padding);
         }
-        intptr_t ptr = block_ptr_ + padding;
+        intptr_t ptr = state_.block_ptr_ + padding;
         assert((ptr & (alignment - 1)) == 0);
-        block_ptr_ = ptr + size;
+        state_.block_ptr_ = ptr + size;
         return reinterpret_cast<void*>(ptr);
     }
+
+    void deallocate(void*, std::size_t) {}
+
+    state get_state() const { return state_; }
+    void set_state(const state& s) { state_ = s; }
+};
+
+template< typename Allocator = std::allocator<uint8_t> > class counted_arena
+    : std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>
+{
+    using allocator_type = typename allocator_traits< Allocator >::template rebind_alloc<uint8_t>;
+    using allocator_traits_type = allocator_traits< allocator_type >;
+
+    struct block {
+        block* next;
+        uintptr_t size:63;
+        uintptr_t owned:1;
+    };
+
+    block* block_initial_ = nullptr;
+    std::size_t block_size_ = 0;
+
+    struct state {
+        block* block_head_ = nullptr;
+        intptr_t block_ptr_ = 0;
+        intptr_t block_end_ = 0;
+        intptr_t allocated_ = 0;
+    };
+
+    state state_;
+
+    bool request_block(intptr_t bytes) {
+        // For large blocks, glibc's malloc is aligning large allocations
+        // to the multiples of page size, also keeping space for chunk size.
+        auto header_size = allocator_traits_type::header_size();
+        auto page_size = allocator_traits_type::page_size();
+        intptr_t size = ((
+            header_size +
+            std::max<intptr_t>(block_size_, sizeof(block) + bytes) +
+            page_size - 1
+        ) & ~(page_size - 1)) - header_size;
+        if (size < 0)
+            return false;
+        assert(size - (intptr_t)sizeof(block) >= bytes);
+        auto head = allocate_block(size);
+        head->size = size;
+        head->owned = true;
+        push_block(head);
+        return true;
+    }
+
+    block* allocate_block(intptr_t size) {
+        block *ptr = reinterpret_cast<block*>(allocator_traits_type::allocate(*this, size));
+        assert((reinterpret_cast<intptr_t>(ptr) & (alignof(block) - 1)) == 0);
+        return ptr;
+    }
+
+    void push_block(block* head) {
+        head->next = state_.block_head_;
+        state_.block_head_ = head;
+        state_.block_ptr_ = reinterpret_cast<intptr_t>(head) + sizeof(block);
+        state_.block_end_ = reinterpret_cast<intptr_t>(head) + head->size;
+    }
+
+    void deallocate_block(block* ptr) {
+        assert(ptr->owned);
+        allocator_traits_type::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
+    }
+
+    void deallocate_blocks(block* end) {
+        auto head = state_.block_head_;
+        while(head != end) {
+            assert(head->owned || !head->next);
+            auto next = head->next;
+            if (head->owned)
+                deallocate_block(head);
+            head = next;
+        }
+    }
+
+public:
+    using resource_mark_type = resource_mark< counted_arena< Allocator >, state >;
+
+    counted_arena(std::size_t block_size)
+        : block_size_(block_size)
+    {}
+
+    template< typename T, std::size_t N > counted_arena(T(&buffer)[N], std::size_t block_size)
+        : counted_arena(reinterpret_cast<uint8_t*>(buffer), N * sizeof(T), block_size) {
+        static_assert(std::is_trivial_v<T>);
+        static_assert(N * sizeof(T) > sizeof(block));
+    }
+
+    counted_arena(uint8_t* buffer, std::size_t size, std::size_t block_size)
+        : counted_arena(block_size)
+    {
+        assert(size > sizeof(block));
+        auto head = reinterpret_cast<block*>(buffer);
+        block_initial_ = head;
+        head->owned = false;
+        head->size = size;
+        push_block(head);
+    }
+
+    ~counted_arena() {
+        deallocate_blocks(nullptr);
+    }
+
+    void* allocate(intptr_t size, intptr_t alignment) {
+        assert((alignment & (alignment - 1)) == 0);
+        intptr_t padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+        intptr_t capacity = state_.block_end_ - state_.block_ptr_ - padding;
+        if (capacity < size) {
+            if (std::numeric_limits<intptr_t>::max() - (alignment - 1) < size)
+                return nullptr;
+            if (!request_block(size + (alignment - 1)))
+                return nullptr;
+            padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+            assert(size <= state_.block_end_ - state_.block_ptr_ - padding);
+        }
+        intptr_t ptr = state_.block_ptr_ + padding;
+        assert((ptr & (alignment - 1)) == 0);
+        state_.block_ptr_ = ptr + size;
+        state_.allocated_ += size;
+        return reinterpret_cast<void*>(ptr);
+    }
+
+    void deallocate(void*, std::size_t size) {
+        state_.allocated_ -= size;
+        assert(state_.allocated_ >= 0);
+        if (state_.allocated_ == 0) {
+            deallocate_blocks(nullptr);
+            state_.block_head_ = nullptr;
+            push_block(block_initial_);
+        }
+    }
+
+    state get_state() const { return state_; }
+    void set_state(const state& s) { state_ = s; }
 };
 
 template <typename T, typename Arena = arena<> > class arena_allocator {
@@ -162,7 +301,7 @@ template <typename T, typename Arena = arena<> > class arena_allocator {
 
 public:
     using value_type    = T;
-    using resource_mark_type = typename Arena::resource_mark;
+    using resource_mark_type = typename Arena::resource_mark_type;
 
     arena_allocator(Arena& arena) noexcept
         : arena_(&arena) {}
@@ -176,7 +315,9 @@ public:
         return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
     }
 
-    void deallocate(value_type*, std::size_t) noexcept {}
+    void deallocate(value_type* ptr, std::size_t n) noexcept {
+        arena_->deallocate(ptr, sizeof(T) * n);
+    }
 
     resource_mark_type resource_mark() { return arena_; }
 };

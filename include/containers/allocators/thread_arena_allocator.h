@@ -12,16 +12,28 @@
 namespace containers {
 
 struct thread_arena_factory {
-    using resource_mark_type = arena<>::resource_mark;
+    using arena_type = arena<>;
+    using resource_mark_type = arena_type::resource_mark_type;
 
-    static arena<>* get() {
+    static arena_type* get() {
         static thread_local uint8_t buffer[1<<10];
-        static thread_local arena<> arena(buffer, 1<<16);
+        static thread_local arena_type arena(buffer, 1<<16);
         return &arena;
     }
 };
 
-template <typename T, typename ArenaFactory = thread_arena_factory > class thread_arena_allocator {
+struct thread_counted_arena_factory {
+    using arena_type = counted_arena<>;
+    using resource_mark_type = arena_type::resource_mark_type;
+
+    static arena_type* get() {
+        static thread_local uint8_t buffer[1<<10];
+        static thread_local arena_type arena(buffer, 1<<16);
+        return &arena;
+    }
+};
+
+template <typename T, typename ArenaFactory = thread_counted_arena_factory > class thread_arena_allocator {
 public:
     using value_type    = T;
     using resource_mark_type = typename ArenaFactory::resource_mark_type;
@@ -35,7 +47,9 @@ public:
         return reinterpret_cast<value_type*>(ArenaFactory::get()->allocate(sizeof(T) * n, alignof(T)));
     }
 
-    void deallocate(value_type*, std::size_t) noexcept {}
+    void deallocate(value_type* ptr, std::size_t n) noexcept {
+        ArenaFactory::get()->deallocate(ptr, sizeof(T)*n);
+    }
 
     static resource_mark_type resource_mark() { return ArenaFactory::get(); }
 };
