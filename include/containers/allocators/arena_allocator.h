@@ -12,6 +12,8 @@
 #include <limits>
 #include <memory>
 
+#include <sys/mman.h>
+
 namespace containers {
 
 template< typename T > struct allocator_traits: std::allocator_traits< T > {
@@ -288,6 +290,77 @@ public:
             deallocate_blocks(nullptr);
             state_.block_head_ = nullptr;
             push_block(block_initial_);
+        }
+    }
+
+    state get_state() const { return state_; }
+    void set_state(const state& s) { state_ = s; }
+};
+
+class mmap_arena {
+    void* buffer_;
+    intptr_t buffer_size_;
+
+    struct state {
+        intptr_t ptr_ = 0;
+        intptr_t end_ = 0;
+        intptr_t allocated_ = 0;
+    };
+
+    state state_;
+
+public:
+    using resource_mark_type = resource_mark< mmap_arena, state >;
+
+    mmap_arena(std::size_t size)
+        : buffer_size_(size)
+    {}
+
+    ~mmap_arena() {
+        if (buffer_)
+            munmap(buffer_, buffer_size_);
+    }
+
+    void* allocate(intptr_t size, intptr_t alignment) {
+        assert((alignment & (alignment - 1)) == 0);
+        intptr_t padding = -(uintptr_t)state_.ptr_ & (alignment - 1);
+        intptr_t capacity = state_.end_ - state_.ptr_ - padding;
+        if (capacity < size) {
+            if (std::numeric_limits<intptr_t>::max() - (alignment - 1) < size)
+                return nullptr;
+
+            if (!buffer_) {
+                if (buffer_size_ - padding < size)
+                    return nullptr;
+                auto buffer = mmap(0, buffer_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                if (buffer == MAP_FAILED)
+                    return nullptr;
+                buffer_ = buffer;
+            }
+
+            state_.ptr_ = (intptr_t)buffer_;
+            state_.end_ = state_.ptr_ + buffer_size_;
+            padding = -(uintptr_t)state_.ptr_ & (alignment - 1);
+            capacity = state_.end_ - state_.ptr_ - padding;
+            if (capacity < size)
+                return nullptr;
+
+            assert(size <= state_.end_ - state_.ptr_ - padding);
+        }
+
+        intptr_t ptr = state_.ptr_ + padding;
+        assert((ptr & (alignment - 1)) == 0);
+        state_.ptr_ = ptr + size;
+        state_.allocated_ += size;
+        return reinterpret_cast<void*>(ptr);
+    }
+
+    void deallocate(void*, std::size_t size) {
+        state_.allocated_ -= size;
+        assert(state_.allocated_ >= 0);
+        if (state_.allocated_ == 0) {
+            state_.ptr_ = (intptr_t)buffer_;
+            state_.end_ = state_.ptr_ + buffer_size_;
         }
     }
 

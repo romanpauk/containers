@@ -33,6 +33,16 @@ struct thread_counted_arena_factory {
     }
 };
 
+struct thread_mmap_arena_factory {
+    using arena_type = mmap_arena;
+    using resource_mark_type = arena_type::resource_mark_type;
+
+    static arena_type* get() {
+        static thread_local arena_type arena(1<<30);
+        return &arena;
+    }
+};
+
 template <typename T, typename ArenaFactory = thread_counted_arena_factory > class thread_arena_allocator {
 public:
     using value_type    = T;
