@@ -66,6 +66,7 @@ target_include_directories(containers INTERFACE include)
 target_sources(containers INTERFACE
     include/containers/allocators/arena_allocator.h
     include/containers/allocators/page_allocator.h
+    include/containers/allocators/small_ptr_arena_allocator.h
     include/containers/growable_array.h
     include/containers/evictable_unordered_map.h
     README.md
@@ -105,6 +106,7 @@ if(CONTAINERS_ENABLE_TESTING)
         test/arena_allocator.cpp
         test/evictable_unordered_map.cpp
         test/growable_array.cpp
+        test/small_ptr_arena_allocator.cpp
         test/thread_arena_allocator.cpp
     )
 
