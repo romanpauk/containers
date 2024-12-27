@@ -10,8 +10,9 @@
 #include <gtest/gtest.h>
 
 TEST(small_ptr_arena_allocator_test, test) {
-    containers::small_ptr_mmap_arena arena(1<<16);
-    containers::small_ptr_arena_allocator<int> allocator(arena);
+    containers::small_ptr_arena_allocator<int> allocator;
+    auto ptr = allocator.allocate(1);
+    *ptr;
 }
 
 

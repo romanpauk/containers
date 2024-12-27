@@ -10,6 +10,7 @@
 #include <containers/allocators/arena_allocator.h>
 
 #include <cassert>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -18,7 +19,7 @@
 
 namespace containers {
 
-class small_ptr_mmap_arena {
+template< std::size_t Alignment = alignof(std::max_align_t) > class small_ptr_mmap_arena {
     void* buffer_ = nullptr;
     intptr_t buffer_size_ = 0;
 
@@ -42,29 +43,30 @@ public:
             munmap(buffer_, buffer_size_);
     }
 
-    void* allocate(intptr_t size, intptr_t alignment) {
+    uint32_t allocate(intptr_t size, intptr_t align) {
+        intptr_t alignment = std::max<intptr_t>(align, Alignment);
         assert((alignment & (alignment - 1)) == 0);
         intptr_t padding = -(uintptr_t)state_.ptr_ & (alignment - 1);
         intptr_t capacity = state_.end_ - state_.ptr_ - padding;
         if (capacity < size) {
             if (std::numeric_limits<intptr_t>::max() - (alignment - 1) < size)
-                return nullptr;
+                return 0;
 
             if (!buffer_) {
-                if (buffer_size_ - padding < size)
-                    return nullptr;
+                if (buffer_size_ - (Alignment - 1) < size)
+                    return { nullptr_index() };
                 auto buffer = mmap(0, buffer_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
                 if (buffer == MAP_FAILED)
-                    return nullptr;
+                    return 0;
                 buffer_ = buffer;
             }
 
-            state_.ptr_ = (intptr_t)buffer_;
-            state_.end_ = state_.ptr_ + buffer_size_;
+            state_.ptr_ = (intptr_t)buffer_ + 1;
+            state_.end_ = state_.ptr_ + buffer_size_ - 1;
             padding = -(uintptr_t)state_.ptr_ & (alignment - 1);
             capacity = state_.end_ - state_.ptr_ - padding;
             if (capacity < size)
-                return nullptr;
+                return 0;
 
             assert(size <= state_.end_ - state_.ptr_ - padding);
         }
@@ -73,22 +75,33 @@ public:
         assert((ptr & (alignment - 1)) == 0);
         state_.ptr_ = ptr + size;
         state_.allocated_ += size;
-        return reinterpret_cast<void*>(ptr);
+        return static_cast<uint32_t>(ptr - (intptr_t)buffer_);
     }
 
-    void deallocate(void*, std::size_t size) {
+    void deallocate(uint32_t, std::size_t size) {
         state_.allocated_ -= size;
         assert(state_.allocated_ >= 0);
         if (state_.allocated_ == 0) {
-            state_.ptr_ = (intptr_t)buffer_;
-            state_.end_ = state_.ptr_ + buffer_size_;
+            state_.ptr_ = (intptr_t)buffer_ + 1;
+            state_.end_ = state_.ptr_ + buffer_size_ - 1;
         }
     }
+
+    void* address(uint32_t index) {
+        if (index == 0)
+            return nullptr;
+
+        // TODO: alignment
+        return reinterpret_cast<void*>((intptr_t)buffer_ + index);
+    }
+
+    uint32_t nullptr_index() { return 0; }
 
     state get_state() const { return state_; }
     void set_state(const state& s) { state_ = s; }
 };
 
+#if 0
 template< typename T > class small_ptr {
     T* ptr_ = nullptr;
     small_ptr(T *ptr, bool) : ptr_(ptr) {}
@@ -103,18 +116,15 @@ public:
 
     small_ptr() = default;
     small_ptr(const small_ptr<T>&) = default;
-
     small_ptr<T>& operator=(const small_ptr<T>&) = default;
 
     static small_ptr<T> pointer_to(element_type& r) noexcept {
         return small_ptr<T>(std::addressof(r), true);
     }
 
-    // allocator::pointer is convertible to allocator::const_pointer
     template<typename U = T, typename std::enable_if_t<std::is_const_v<U>, int> = 0>
-    small_ptr(const small_ptr<typename std::remove_const_t<T>>& p) : ptr_(p.operator->()  /* std::to_address(p) in C++20 */) {}
+    small_ptr(const small_ptr<typename std::remove_const_t<T>>& p) : ptr_(p.operator->()) {}
 
-    // NullablePointer
     small_ptr(std::nullptr_t) : small_ptr() {}
     small_ptr& operator=(std::nullptr_t) {
         ptr_ = nullptr;
@@ -141,7 +151,7 @@ public:
         return *this;
     }
 
-    small_ptr<T> operator--(int) { return FancyPtr(ptr_--, true); }
+    small_ptr<T> operator--(int) { return small_ptr(ptr_--, true); }
 
     small_ptr<T>& operator+=(difference_type n) {
         ptr_ += n;
@@ -243,42 +253,65 @@ public:
         return std::pointer_traits<small_ptr<T>>::pointer_to(*static_cast<T*>(ptr_));
     }
 };
+#else
+// TODO: needs an offset for multiple-inherited bases.
+// TODO: operator +/- etc will need an object size... which is sizeof(T) combined with Alignment.
+template< typename T, typename ArenaFactory > struct small_ptr {
+    uint32_t index_;
 
-template <typename T, typename Arena = small_ptr_mmap_arena > class small_ptr_arena_allocator {
-    template <typename U, typename ArenaU> friend class small_ptr_arena_allocator;
-    Arena* arena_ = nullptr;
+    T* operator -> () {
+        return static_cast<T*>(ArenaFactory::get()->address(index_));
+    }
+
+    T& operator* () {
+        return *operator ->();
+    }
+};
+#endif
+
+struct small_ptr_mmap_arena_factory {
+    using arena_type = small_ptr_mmap_arena<>;
+    using resource_mark_type = arena_type::resource_mark_type;
+
+    static arena_type* get() {
+        static thread_local arena_type arena(1<<30);
+        return &arena;
+    }
+};
+
+template <typename T, typename ArenaFactory = small_ptr_mmap_arena_factory > class small_ptr_arena_allocator {
+    template <typename U, typename ArenaFactoryU> friend class small_ptr_arena_allocator;
 
 public:
-    using pointer = small_ptr<T>;
+    using pointer = small_ptr<T, ArenaFactory>;
     using value_type    = T;
-    using resource_mark_type = typename Arena::resource_mark_type;
+    using resource_mark_type = typename ArenaFactory::resource_mark_type;
 
-    small_ptr_arena_allocator(Arena& arena) noexcept
-        : arena_(&arena) {}
+    small_ptr_arena_allocator() = default;
 
-    template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, Arena>& other) noexcept
-        : arena_(other.arena_) {}
+    template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, ArenaFactory>&) noexcept
+    {}
 
     pointer allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
-            return nullptr;
-        return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
+            return { ArenaFactory::get()->nullptr_index() };
+        return { ArenaFactory::get()->allocate(sizeof(T) * n, alignof(T)) };
     }
 
     void deallocate(pointer ptr, std::size_t n) noexcept {
-        arena_->deallocate(ptr.operator->(), sizeof(T) * n);
+        ArenaFactory::get()->deallocate(ptr, sizeof(T) * n);
     }
 
-    resource_mark_type resource_mark() { return arena_; }
+    resource_mark_type resource_mark() { return ArenaFactory::get(); }
 };
 
-template <typename T, typename U, typename Arena>
-bool operator == (const small_ptr_arena_allocator<T, Arena>& lhs, const small_ptr_arena_allocator<U, Arena>& rhs) noexcept {
-    return lhs.arena_ == rhs.arena_;
+template <typename T, typename U, typename ArenaFactory>
+bool operator == (const small_ptr_arena_allocator<T, ArenaFactory>&, const small_ptr_arena_allocator<U, ArenaFactory>&) noexcept {
+    return true; // TODO
 }
 
-template <typename T, typename U, typename Arena>
-bool operator != (const small_ptr_arena_allocator<T, Arena>& x, const small_ptr_arena_allocator<U, Arena>& y) noexcept {
+template <typename T, typename U, typename ArenaFactory>
+bool operator != (const small_ptr_arena_allocator<T, ArenaFactory>& x, const small_ptr_arena_allocator<U, ArenaFactory>& y) noexcept {
     return !(x == y);
 }
 
