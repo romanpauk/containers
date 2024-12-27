@@ -53,7 +53,7 @@ public:
                 return 0;
 
             if (!buffer_) {
-                if (buffer_size_ - (Alignment - 1) < size)
+                if (buffer_size_ - intptr_t(Alignment - 1) < size)
                     return { nullptr_index() };
                 auto buffer = mmap(0, buffer_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
                 if (buffer == MAP_FAILED)
@@ -88,11 +88,28 @@ public:
     }
 
     void* address(uint32_t index) {
+        assert(index < buffer_size_);
         if (index == 0)
             return nullptr;
 
         // TODO: alignment
         return reinterpret_cast<void*>((intptr_t)buffer_ + index);
+    }
+
+    uint32_t index(uint32_t size, uint32_t n) {
+        return size * n;
+    }
+
+    uint32_t index(void* ptr) {
+        assert(ptr);
+        assert((intptr_t)ptr - (intptr_t)buffer_ > 0);
+        assert((intptr_t)ptr - (intptr_t)buffer_ < buffer_size_);
+
+        return (intptr_t)ptr - (intptr_t)buffer_;
+    }
+
+    ptrdiff_t difference(std::size_t size, uint32_t a, uint32_t b) {
+        return ((ptrdiff_t)a - (ptrdiff_t)b)/size;
     }
 
     uint32_t nullptr_index() { return 0; }
@@ -101,11 +118,12 @@ public:
     void set_state(const state& s) { state_ = s; }
 };
 
-#if 0
-template< typename T > class small_ptr {
-    T* ptr_ = nullptr;
-    small_ptr(T *ptr, bool) : ptr_(ptr) {}
+#if 1
+template< typename T, typename Factory > class small_ptr {
+    template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
+    uint32_t index_ = 0;
 
+    small_ptr(uint32_t index) : index_(index) {}
 public:
     using element_type = T;
     using difference_type = std::ptrdiff_t;
@@ -115,90 +133,127 @@ public:
     using iterator_category = std::random_access_iterator_tag;
 
     small_ptr() = default;
-    small_ptr(const small_ptr<T>&) = default;
-    small_ptr<T>& operator=(const small_ptr<T>&) = default;
+    small_ptr(const small_ptr<T, Factory>&) = default;
+    small_ptr<T, Factory>& operator = (const small_ptr<T, Factory>&) = default;
 
-    static small_ptr<T> pointer_to(element_type& r) noexcept {
-        return small_ptr<T>(std::addressof(r), true);
-    }
+    small_ptr(T *ptr): index_(Factory::get()->index(ptr)) {}
+
+    // TODO: need to check that no inheritabce displacement is present
+    //template<typename U> small_ptr(small_ptr<U> p) : index_(p.index_) {}
 
     template<typename U = T, typename std::enable_if_t<std::is_const_v<U>, int> = 0>
-    small_ptr(const small_ptr<typename std::remove_const_t<T>>& p) : ptr_(p.operator->()) {}
+    small_ptr(const small_ptr<typename std::remove_const_t<T>, Factory>& p) : index_(p.index_) {}
 
-    small_ptr(std::nullptr_t) : small_ptr() {}
-    small_ptr& operator=(std::nullptr_t) {
-        ptr_ = nullptr;
-        return *this;
-    }
-    explicit operator bool() const { return *this != nullptr; }
+    small_ptr(std::nullptr_t): small_ptr<T, Factory>() {}
 
-    pointer operator->() const { return ptr_; }
-
-    element_type& operator*() const { return *ptr_; }
-
-    small_ptr<T>& operator++() {
-        ++ptr_;
+    small_ptr<T, Factory>& operator = (std::nullptr_t) {
+        index_ = 0;
         return *this;
     }
 
-    friend bool operator==(small_ptr<T> l, small_ptr<T> r) { return l.ptr_ == r.ptr_; }
-    friend bool operator!=(small_ptr<T> l, small_ptr<T> r) { return !(l == r); }
+    explicit operator bool() const { return index_ != 0; }
 
-    small_ptr<T> operator++(int) { return small_ptr<T>(ptr_++, true); }
+    operator T*() { return operator ->(); }
+    operator const T*() const { return operator ->(); }
 
-    small_ptr<T>& operator--() {
-        --ptr_;
+    pointer operator->() const { return static_cast<T*>(Factory::get()->address(index_)); }
+
+    element_type& operator*() const { return *operator->(); }
+
+    small_ptr<T, Factory>& operator++() {
+        index_ += Factory::get()->index(sizeof(T), 1);
         return *this;
     }
 
-    small_ptr<T> operator--(int) { return small_ptr(ptr_--, true); }
+    small_ptr<T, Factory> operator++ (int) {
+        small_ptr<T, Factory> p(index_);
+        index_ += Factory::get()->index(sizeof(T), 1);
+        return p;
+    }
 
-    small_ptr<T>& operator+=(difference_type n) {
-        ptr_ += n;
+    small_ptr<T, Factory>& operator--() {
+        index_ -= Factory::get()->index(sizeof(T), 1);
         return *this;
     }
 
-    friend small_ptr<T> operator+(small_ptr<T> p, difference_type n) { return p += n; }
+    small_ptr<T, Factory> operator--(int) {
+        small_ptr<T, Factory> p(index_);
+        index_ -= Factory::get()->index(sizeof(T), 1);
+        return p;
+    }
 
-    friend small_ptr<T> operator+(difference_type n, small_ptr<T> p) { return p += n; }
+    friend bool operator == (small_ptr<T, Factory> l, small_ptr<T, Factory> r) {
+        return l.index_ == r.index_;
+    }
 
-    small_ptr<T>& operator-=(difference_type n) {
-        ptr_ -= n;
+    friend bool operator != (small_ptr<T, Factory> l, small_ptr<T, Factory> r) {
+        return !(l == r);
+    }
+
+    small_ptr<T, Factory>& operator += (difference_type n) {
+        index_ += Factory::get()->index(sizeof(T), n);
         return *this;
     }
 
-    friend small_ptr<T> operator-(small_ptr<T> p, difference_type n) { return p -= n; }
+    small_ptr<T, Factory>& operator -= (difference_type n) {
+        index_ -= Factory::get()->index(sizeof(T), n);
+        return *this;
+    }
 
-    friend difference_type operator-(small_ptr<T> a, small_ptr<T> b) { return a.ptr_ - b.ptr_; }
+    friend small_ptr<T, Factory> operator + (small_ptr<T, Factory> p, difference_type n) {
+        return p.index_ + Factory::get()->index(sizeof(T), n);
+    }
 
-    reference operator[](difference_type n) const { return ptr_[n]; }
+    friend small_ptr<T, Factory> operator + (difference_type n, small_ptr<T, Factory> p) {
+        return p.index_ + Factory::get()->index(sizeof(T), n);
+    }
 
-    friend bool operator<(small_ptr<T> a, small_ptr<T> b) { return std::less<pointer>(a.ptr_, b.ptr_); }
+    friend small_ptr<T, Factory> operator - (small_ptr<T, Factory> p, difference_type n) {
+        return p.index_ - Factory::get()->index(sizeof(T), n);
+    }
 
-    friend bool operator> (small_ptr<T> a, small_ptr<T> b) { return b < a; }
-    friend bool operator>=(small_ptr<T> a, small_ptr<T> b) { return !(a < b); }
-    friend bool operator<=(small_ptr<T> a, small_ptr<T> b) { return !(b < a); }
+    friend difference_type operator - (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+        return Factory::get()->difference(sizeof(T), a.index_, b.index_);
+    }
 
-#if defined(_LIBCPP_MEMORY)
-    // Extra libc++ requirement (Since libc++ does `static_cast<FancyPtr<U>>(FancyPtr<T>())` sometimes)
-    template<typename U> small_ptr(small_ptr<U> p) : ptr_(static_cast<T*>(p.operator->())) {}
-#elif defined(_GLIBCXX_MEMORY)
-    // Extra libstdc++ requirement (Since libstdc++ uses raw pointers internally and tries to implicitly cast back
-    // and also casts from pointers to different types)
-    template<typename U> small_ptr(small_ptr<U> p) : ptr_(static_cast<T*>(p.operator->())) {}
-    small_ptr(T *ptr) : small_ptr(ptr, true) {}
-    operator T*() { return ptr_; }
-#endif
+    reference operator[](difference_type n) const { return operator->[n]; }
+
+    friend bool operator < (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+        return a.index_ < b.index_;
+    }
+
+    friend bool operator > (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+        return b.index_ < a.index_;
+    }
+
+    friend bool operator >= (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+        return !(a.index_ < b.index_);
+    }
+
+    friend bool operator <= (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+        return !(b.index_ < a.index_);
+    }
+
+    friend bool operator == (small_ptr<T, Factory> p, std::nullptr_t) {
+        return p.index_ == 0;
+    }
+
+    friend bool operator == (std::nullptr_t, small_ptr<T, Factory> p) {
+        return p.index_ == 0;
+    }
+
+    friend bool operator != (small_ptr<T, Factory> p, std::nullptr_t) {
+        return p.index_ != 0;
+    }
+
+    friend bool operator != (std::nullptr_t, small_ptr<T, Factory> p) {
+        return p.index_ != 0;
+    }
 };
 
-template< typename T > bool operator==(small_ptr<T> p, std::nullptr_t) { return p == small_ptr<T>(); }
-template< typename T > bool operator==(std::nullptr_t, small_ptr<T> p) { return small_ptr<T>() == p; }
-template< typename T > bool operator!=(small_ptr<T> p, std::nullptr_t) { return p != small_ptr<T>(); }
-template< typename T > bool operator!=(std::nullptr_t, small_ptr<T> p) { return small_ptr<T>() != p; }
-
-template<> class small_ptr<void> {
-    void* ptr_ = nullptr;
-    small_ptr(void *ptr, bool) : ptr_(ptr) {}
+template< typename Factory > class small_ptr<void, Factory> {
+    uint32_t index_ = 0;
+    small_ptr(uint32_t index) : index_(index) {}
 public:
     using element_type = void;
     using pointer = void*;
@@ -207,27 +262,24 @@ public:
     small_ptr(const small_ptr&) = default;
 
     template<typename T, typename std::enable_if_t<!std::is_const_v<T>, int> = 0>
-    small_ptr(small_ptr<T> p) : ptr_(static_cast<void*>(p.operator->())) {}
+    small_ptr(small_ptr<T, Factory> p) : index_(p.index_) {}
 
-    small_ptr& operator=(const small_ptr<void>&) = default;
+    small_ptr& operator=(const small_ptr<void, Factory>&) = default;
 
     small_ptr& operator=(std::nullptr_t) {
-        ptr_ = nullptr;
+        index_ = 0;
         return *this;
     }
 
-    pointer operator->() const { return ptr_; }
+    pointer operator->() const { return Factory::get()->address(index_); }
 
-    template<typename T>
-    explicit operator small_ptr<T>() {
-        if (ptr_ == nullptr) return nullptr;
-        return std::pointer_traits<small_ptr<T>>::pointer_to(*static_cast<T*>(ptr_));
-    }
+    template<typename T> explicit operator small_ptr<T, Factory>() { return index_; }
 };
 
-template<> class small_ptr<const void> {
-    const void* ptr_ = nullptr;
-    small_ptr(const void *ptr, bool) : ptr_(ptr) {}
+template< typename Factory > class small_ptr<const void, Factory> {
+    uint32_t index_ = 0;
+    small_ptr(uint32_t index) : index_(index) {}
+
 public:
     using element_type = const void;
     using pointer = const void*;
@@ -236,26 +288,21 @@ public:
     small_ptr(const small_ptr&) = default;
 
     template<typename T, typename std::enable_if_t<!std::is_const_v<T>, int> = 0>
-    small_ptr(small_ptr<T> p) : ptr_(static_cast<void*>(p.operator->())) {}
+    small_ptr(small_ptr<T, Factory> p) : index_(p.index_) {}
 
     small_ptr& operator=(const small_ptr&) = default;
 
     small_ptr& operator=(std::nullptr_t) {
-        ptr_ = nullptr;
+        index_ = 0;
         return *this;
     }
 
-    pointer operator->() const { return ptr_; }
+    pointer operator->() const { return Factory::get()->address(index_); }
 
-    template<typename T>
-    explicit operator small_ptr<T>() {
-        if (ptr_ == nullptr) return nullptr;
-        return std::pointer_traits<small_ptr<T>>::pointer_to(*static_cast<T*>(ptr_));
-    }
+    template<typename T> explicit operator small_ptr<T, Factory>() { return index_; }
 };
+
 #else
-// TODO: needs an offset for multiple-inherited bases.
-// TODO: operator +/- etc will need an object size... which is sizeof(T) combined with Alignment.
 template< typename T, typename ArenaFactory > struct small_ptr {
     uint32_t index_;
 
@@ -265,6 +312,11 @@ template< typename T, typename ArenaFactory > struct small_ptr {
 
     T& operator* () {
         return *operator ->();
+    }
+
+    small_ptr& operator -= (ptrdiff_t n) {
+        index_ -= ArenaFactory::get()->index(sizeof(T), n);
+        return *this;
     }
 };
 #endif
@@ -279,27 +331,28 @@ struct small_ptr_mmap_arena_factory {
     }
 };
 
-template <typename T, typename ArenaFactory = small_ptr_mmap_arena_factory > class small_ptr_arena_allocator {
+template <typename T, typename ArenaFactory = small_ptr_mmap_arena_factory>
+class small_ptr_arena_allocator {
     template <typename U, typename ArenaFactoryU> friend class small_ptr_arena_allocator;
 
 public:
-    using pointer = small_ptr<T, ArenaFactory>;
-    using value_type    = T;
     using resource_mark_type = typename ArenaFactory::resource_mark_type;
 
-    small_ptr_arena_allocator() = default;
+    using pointer = small_ptr<T, ArenaFactory>;
+    using value_type = T;
 
+    small_ptr_arena_allocator() = default;
     template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, ArenaFactory>&) noexcept
     {}
 
     pointer allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
-            return { ArenaFactory::get()->nullptr_index() };
-        return { ArenaFactory::get()->allocate(sizeof(T) * n, alignof(T)) };
+            return 0u;
+        return ArenaFactory::get()->allocate(sizeof(T) * n, alignof(T));
     }
 
     void deallocate(pointer ptr, std::size_t n) noexcept {
-        ArenaFactory::get()->deallocate(ptr, sizeof(T) * n);
+        ArenaFactory::get()->deallocate(ptr.index_, sizeof(T) * n);
     }
 
     resource_mark_type resource_mark() { return ArenaFactory::get(); }
