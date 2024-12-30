@@ -19,7 +19,7 @@
 
 namespace containers {
 
-template< std::size_t Alignment = alignof(std::max_align_t) > class small_ptr_mmap_arena {
+template< std::size_t MinSize = 1, std::size_t MinAlignment = alignof(std::max_align_t) > class small_ptr_mmap_arena {
     void* buffer_ = nullptr;
     intptr_t buffer_size_ = 0;
 
@@ -32,6 +32,8 @@ template< std::size_t Alignment = alignof(std::max_align_t) > class small_ptr_mm
     state state_;
 
 public:
+    static constexpr std::size_t MinAllocationSize = MinSize;
+
     using resource_mark_type = resource_mark< small_ptr_mmap_arena, state >;
 
     small_ptr_mmap_arena(std::size_t size)
@@ -44,7 +46,7 @@ public:
     }
 
     uint32_t allocate(intptr_t size, intptr_t align) {
-        intptr_t alignment = std::max<intptr_t>(align, Alignment);
+        intptr_t alignment = std::max<intptr_t>(align, MinAlignment);
         assert((alignment & (alignment - 1)) == 0);
         intptr_t padding = -(uintptr_t)state_.ptr_ & (alignment - 1);
         intptr_t capacity = state_.end_ - state_.ptr_ - padding;
@@ -53,7 +55,7 @@ public:
                 return 0;
 
             if (!buffer_) {
-                if (buffer_size_ - intptr_t(Alignment - 1) < size)
+                if (buffer_size_ - intptr_t(MinAlignment - 1) < size)
                     return { nullptr_index() };
                 auto buffer = mmap(0, buffer_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
                 if (buffer == MAP_FAILED)
@@ -120,6 +122,8 @@ public:
 
 #if 1
 template< typename T, typename Factory > class small_ptr {
+    static_assert(sizeof(T) >= Factory::arena_type::MinAllocationSize);
+
     template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
     uint32_t index_ = 0;
 
@@ -133,8 +137,8 @@ public:
     using iterator_category = std::random_access_iterator_tag;
 
     small_ptr() = default;
-    small_ptr(const small_ptr<T, Factory>&) = default;
-    small_ptr<T, Factory>& operator = (const small_ptr<T, Factory>&) = default;
+    small_ptr(const small_ptr&) = default;
+    small_ptr& operator = (const small_ptr&) = default;
 
     small_ptr(T *ptr): index_(Factory::get()->index(ptr)) {}
 
@@ -144,9 +148,9 @@ public:
     template<typename U = T, typename std::enable_if_t<std::is_const_v<U>, int> = 0>
     small_ptr(const small_ptr<typename std::remove_const_t<T>, Factory>& p) : index_(p.index_) {}
 
-    small_ptr(std::nullptr_t): small_ptr<T, Factory>() {}
+    small_ptr(std::nullptr_t): small_ptr() {}
 
-    small_ptr<T, Factory>& operator = (std::nullptr_t) {
+    small_ptr& operator = (std::nullptr_t) {
         index_ = 0;
         return *this;
     }
@@ -160,93 +164,93 @@ public:
 
     element_type& operator*() const { return *operator->(); }
 
-    small_ptr<T, Factory>& operator++() {
+    small_ptr& operator++() {
         index_ += Factory::get()->index(sizeof(T), 1);
         return *this;
     }
 
-    small_ptr<T, Factory> operator++ (int) {
-        small_ptr<T, Factory> p(index_);
+    small_ptr operator++ (int) {
+        small_ptr p(index_);
         index_ += Factory::get()->index(sizeof(T), 1);
         return p;
     }
 
-    small_ptr<T, Factory>& operator--() {
+    small_ptr& operator--() {
         index_ -= Factory::get()->index(sizeof(T), 1);
         return *this;
     }
 
-    small_ptr<T, Factory> operator--(int) {
-        small_ptr<T, Factory> p(index_);
+    small_ptr operator--(int) {
+        small_ptr p(index_);
         index_ -= Factory::get()->index(sizeof(T), 1);
         return p;
     }
 
-    friend bool operator == (small_ptr<T, Factory> l, small_ptr<T, Factory> r) {
+    friend bool operator == (small_ptr l, small_ptr r) {
         return l.index_ == r.index_;
     }
 
-    friend bool operator != (small_ptr<T, Factory> l, small_ptr<T, Factory> r) {
+    friend bool operator != (small_ptr l, small_ptr r) {
         return !(l == r);
     }
 
-    small_ptr<T, Factory>& operator += (difference_type n) {
+    small_ptr& operator += (difference_type n) {
         index_ += Factory::get()->index(sizeof(T), n);
         return *this;
     }
 
-    small_ptr<T, Factory>& operator -= (difference_type n) {
+    small_ptr& operator -= (difference_type n) {
         index_ -= Factory::get()->index(sizeof(T), n);
         return *this;
     }
 
-    friend small_ptr<T, Factory> operator + (small_ptr<T, Factory> p, difference_type n) {
+    friend small_ptr operator + (small_ptr p, difference_type n) {
         return p.index_ + Factory::get()->index(sizeof(T), n);
     }
 
-    friend small_ptr<T, Factory> operator + (difference_type n, small_ptr<T, Factory> p) {
+    friend small_ptr operator + (difference_type n, small_ptr p) {
         return p.index_ + Factory::get()->index(sizeof(T), n);
     }
 
-    friend small_ptr<T, Factory> operator - (small_ptr<T, Factory> p, difference_type n) {
+    friend small_ptr operator - (small_ptr p, difference_type n) {
         return p.index_ - Factory::get()->index(sizeof(T), n);
     }
 
-    friend difference_type operator - (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+    friend difference_type operator - (small_ptr a, small_ptr b) {
         return Factory::get()->difference(sizeof(T), a.index_, b.index_);
     }
 
-    reference operator[](difference_type n) const { return operator->[n]; }
+    reference operator[](difference_type n) const { return operator->()[n]; }
 
-    friend bool operator < (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+    friend bool operator < (small_ptr a, small_ptr b) {
         return a.index_ < b.index_;
     }
 
-    friend bool operator > (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+    friend bool operator > (small_ptr a, small_ptr b) {
         return b.index_ < a.index_;
     }
 
-    friend bool operator >= (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+    friend bool operator >= (small_ptr a, small_ptr b) {
         return !(a.index_ < b.index_);
     }
 
-    friend bool operator <= (small_ptr<T, Factory> a, small_ptr<T, Factory> b) {
+    friend bool operator <= (small_ptr a, small_ptr b) {
         return !(b.index_ < a.index_);
     }
 
-    friend bool operator == (small_ptr<T, Factory> p, std::nullptr_t) {
+    friend bool operator == (small_ptr p, std::nullptr_t) {
         return p.index_ == 0;
     }
 
-    friend bool operator == (std::nullptr_t, small_ptr<T, Factory> p) {
+    friend bool operator == (std::nullptr_t, small_ptr p) {
         return p.index_ == 0;
     }
 
-    friend bool operator != (small_ptr<T, Factory> p, std::nullptr_t) {
+    friend bool operator != (small_ptr p, std::nullptr_t) {
         return p.index_ != 0;
     }
 
-    friend bool operator != (std::nullptr_t, small_ptr<T, Factory> p) {
+    friend bool operator != (std::nullptr_t, small_ptr p) {
         return p.index_ != 0;
     }
 };
@@ -262,7 +266,7 @@ public:
     small_ptr(const small_ptr&) = default;
 
     template<typename T, typename std::enable_if_t<!std::is_const_v<T>, int> = 0>
-    small_ptr(small_ptr<T, Factory> p) : index_(p.index_) {}
+    small_ptr(const small_ptr<T, Factory>& p) : index_(p.index_) {}
 
     small_ptr& operator=(const small_ptr<void, Factory>&) = default;
 
@@ -288,7 +292,7 @@ public:
     small_ptr(const small_ptr&) = default;
 
     template<typename T, typename std::enable_if_t<!std::is_const_v<T>, int> = 0>
-    small_ptr(small_ptr<T, Factory> p) : index_(p.index_) {}
+    small_ptr(const small_ptr<T, Factory>& p) : index_(p.index_) {}
 
     small_ptr& operator=(const small_ptr&) = default;
 
@@ -331,40 +335,41 @@ struct small_ptr_mmap_arena_factory {
     }
 };
 
-template <typename T, typename ArenaFactory = small_ptr_mmap_arena_factory>
+template <typename T, typename Factory = small_ptr_mmap_arena_factory>
 class small_ptr_arena_allocator {
-    template <typename U, typename ArenaFactoryU> friend class small_ptr_arena_allocator;
+    template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
+
 
 public:
-    using resource_mark_type = typename ArenaFactory::resource_mark_type;
+    using resource_mark_type = typename Factory::resource_mark_type;
 
-    using pointer = small_ptr<T, ArenaFactory>;
+    using pointer = small_ptr<T, Factory>;
     using value_type = T;
 
     small_ptr_arena_allocator() = default;
-    template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, ArenaFactory>&) noexcept
+    template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, Factory>&) noexcept
     {}
 
     pointer allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
             return 0u;
-        return ArenaFactory::get()->allocate(sizeof(T) * n, alignof(T));
+        return Factory::get()->allocate(sizeof(T) * n, alignof(T));
     }
 
     void deallocate(pointer ptr, std::size_t n) noexcept {
-        ArenaFactory::get()->deallocate(ptr.index_, sizeof(T) * n);
+        Factory::get()->deallocate(ptr.index_, sizeof(T) * n);
     }
 
-    resource_mark_type resource_mark() { return ArenaFactory::get(); }
+    resource_mark_type resource_mark() { return Factory::get(); }
 };
 
-template <typename T, typename U, typename ArenaFactory>
-bool operator == (const small_ptr_arena_allocator<T, ArenaFactory>&, const small_ptr_arena_allocator<U, ArenaFactory>&) noexcept {
+template <typename T, typename U, typename Factory>
+bool operator == (const small_ptr_arena_allocator<T, Factory>&, const small_ptr_arena_allocator<U, Factory>&) noexcept {
     return true; // TODO
 }
 
-template <typename T, typename U, typename ArenaFactory>
-bool operator != (const small_ptr_arena_allocator<T, ArenaFactory>& x, const small_ptr_arena_allocator<U, ArenaFactory>& y) noexcept {
+template <typename T, typename U, typename Factory>
+bool operator != (const small_ptr_arena_allocator<T, Factory>& x, const small_ptr_arena_allocator<U, Factory>& y) noexcept {
     return !(x == y);
 }
 
