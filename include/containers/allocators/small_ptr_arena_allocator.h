@@ -33,6 +33,7 @@ template< std::size_t MinSize = 1, std::size_t MinAlignment = alignof(std::max_a
 
 public:
     static constexpr std::size_t MinAllocationSize = MinSize;
+    static_assert(((MinAllocationSize) & (MinAllocationSize - 1)) == 0);
 
     using resource_mark_type = resource_mark< small_ptr_mmap_arena, state >;
 
@@ -56,7 +57,7 @@ public:
 
             if (!buffer_) {
                 if (buffer_size_ - intptr_t(MinAlignment - 1) < size)
-                    return { nullptr_index() };
+                    return 0;
                 auto buffer = mmap(0, buffer_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
                 if (buffer == MAP_FAILED)
                     return 0;
@@ -89,17 +90,12 @@ public:
         }
     }
 
-    void* address(uint32_t index) {
+    void* address(intptr_t index) {
+        index *= MinAllocationSize;
         assert(index < buffer_size_);
         if (index == 0)
             return nullptr;
-
-        // TODO: alignment
         return reinterpret_cast<void*>((intptr_t)buffer_ + index);
-    }
-
-    uint32_t index(uint32_t size, uint32_t n) {
-        return size * n;
     }
 
     uint32_t index(void* ptr) {
@@ -107,14 +103,8 @@ public:
         assert((intptr_t)ptr - (intptr_t)buffer_ > 0);
         assert((intptr_t)ptr - (intptr_t)buffer_ < buffer_size_);
 
-        return (intptr_t)ptr - (intptr_t)buffer_;
+        return ((intptr_t)ptr - (intptr_t)buffer_)/MinAllocationSize;
     }
-
-    ptrdiff_t difference(std::size_t size, uint32_t a, uint32_t b) {
-        return ((ptrdiff_t)a - (ptrdiff_t)b)/size;
-    }
-
-    uint32_t nullptr_index() { return 0; }
 
     state get_state() const { return state_; }
     void set_state(const state& s) { state_ = s; }
@@ -122,12 +112,19 @@ public:
 
 #if 1
 template< typename T, typename Factory > class small_ptr {
-    static_assert(sizeof(T) >= Factory::arena_type::MinAllocationSize);
+    using arena_type = typename Factory::arena_type;
+    static_assert(sizeof(T) >= arena_type::MinAllocationSize);
 
     template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
+
     uint32_t index_ = 0;
 
     small_ptr(uint32_t index) : index_(index) {}
+
+    static uint32_t index(uint32_t size, uint32_t n) {
+        return (size * n) / arena_type::MinAllocationSize;
+    }
+
 public:
     using element_type = T;
     using difference_type = std::ptrdiff_t;
@@ -165,24 +162,24 @@ public:
     element_type& operator*() const { return *operator->(); }
 
     small_ptr& operator++() {
-        index_ += Factory::get()->index(sizeof(T), 1);
+        index_ += index(sizeof(T), 1);
         return *this;
     }
 
     small_ptr operator++ (int) {
         small_ptr p(index_);
-        index_ += Factory::get()->index(sizeof(T), 1);
+        index_ += index(sizeof(T), 1);
         return p;
     }
 
     small_ptr& operator--() {
-        index_ -= Factory::get()->index(sizeof(T), 1);
+        index_ -= index(sizeof(T), 1);
         return *this;
     }
 
     small_ptr operator--(int) {
         small_ptr p(index_);
-        index_ -= Factory::get()->index(sizeof(T), 1);
+        index_ -= index(sizeof(T), 1);
         return p;
     }
 
@@ -195,29 +192,29 @@ public:
     }
 
     small_ptr& operator += (difference_type n) {
-        index_ += Factory::get()->index(sizeof(T), n);
+        index_ += index(sizeof(T), n);
         return *this;
     }
 
     small_ptr& operator -= (difference_type n) {
-        index_ -= Factory::get()->index(sizeof(T), n);
+        index_ -= index(sizeof(T), n);
         return *this;
     }
 
     friend small_ptr operator + (small_ptr p, difference_type n) {
-        return p.index_ + Factory::get()->index(sizeof(T), n);
+        return p.index_ + index(sizeof(T), n);
     }
 
     friend small_ptr operator + (difference_type n, small_ptr p) {
-        return p.index_ + Factory::get()->index(sizeof(T), n);
+        return p.index_ + index(sizeof(T), n);
     }
 
     friend small_ptr operator - (small_ptr p, difference_type n) {
-        return p.index_ - Factory::get()->index(sizeof(T), n);
+        return p.index_ - index(sizeof(T), n);
     }
 
     friend difference_type operator - (small_ptr a, small_ptr b) {
-        return Factory::get()->difference(sizeof(T), a.index_, b.index_);
+        return ((intptr_t)a.index_ - (intptr_t)b.index_) / sizeof(T);
     }
 
     reference operator[](difference_type n) const { return operator->()[n]; }
