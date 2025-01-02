@@ -160,7 +160,11 @@ public:
     void deallocate(void*, std::size_t) {}
 
     state get_state() const { return state_; }
-    void set_state(const state& s) { state_ = s; }
+
+    void set_state(const state& s) {
+        deallocate_blocks(s.block_head_);
+        state_ = s;
+    }
 };
 
 template< typename Allocator = std::allocator<uint8_t> > class counted_arena
@@ -294,7 +298,11 @@ public:
     }
 
     state get_state() const { return state_; }
-    void set_state(const state& s) { state_ = s; }
+
+    void set_state(const state& s) {
+        deallocate_blocks(s.block_head_);
+        state_ = s;
+    }
 };
 
 class mmap_arena {
@@ -365,7 +373,10 @@ public:
     }
 
     state get_state() const { return state_; }
-    void set_state(const state& s) { state_ = s; }
+
+    void set_state(const state& s) {
+        state_ = s;
+    }
 };
 
 template <typename T, typename Arena = arena<> > class arena_allocator {

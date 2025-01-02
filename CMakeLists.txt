@@ -83,6 +83,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         benchmark/evictable_unordered_map.cpp
         benchmark/growable_array.cpp
         benchmark/main.cpp
+        benchmark/small_ptr_arena_allocator.cpp
         benchmark/thread_arena_allocator.cpp
     )
 

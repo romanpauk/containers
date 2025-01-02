@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include <sys/mman.h>
 
@@ -78,7 +79,7 @@ public:
         assert((ptr & (alignment - 1)) == 0);
         state_.ptr_ = ptr + size;
         state_.allocated_ += size;
-        return static_cast<uint32_t>(ptr - (intptr_t)buffer_);
+        return static_cast<uint32_t>(ptr - (intptr_t)buffer_) / MinAllocationSize;
     }
 
     void deallocate(uint32_t, std::size_t size) {
@@ -108,6 +109,173 @@ public:
 
     state get_state() const { return state_; }
     void set_state(const state& s) { state_ = s; }
+};
+
+template< std::size_t MinSize, std::size_t BlockSize, typename Allocator = std::allocator<uint8_t> > class small_ptr_counted_arena
+    : std::allocator_traits< Allocator >::template rebind_alloc<uint8_t>
+{
+    using allocator_type = typename allocator_traits< Allocator >::template rebind_alloc<uint8_t>;
+    using allocator_traits_type = allocator_traits< allocator_type >;
+
+    struct block {
+        uintptr_t size:63;
+        uintptr_t owned:1;
+    };
+
+    block* block_initial_ = nullptr;
+
+    struct state {
+        intptr_t index_size_ = 0;
+        intptr_t block_ptr_ = 0;
+        intptr_t block_end_ = 0;
+        intptr_t allocated_ = 0;
+    };
+
+    state state_;
+
+    std::vector< std::pair< block*, intptr_t > > index_;
+
+    bool request_block(intptr_t bytes) {
+        // For large blocks, glibc's malloc is aligning large allocations
+        // to the multiples of page size, also keeping space for chunk size.
+        //auto header_size = allocator_traits_type::header_size();
+        //auto page_size = allocator_traits_type::page_size();
+        //intptr_t size = ((
+        //    header_size +
+        //    std::max<intptr_t>(block_size_, sizeof(block) + bytes) +
+        //    page_size - 1
+        //) & ~(page_size - 1)) - header_size;
+        intptr_t size = (sizeof(block) + bytes + BlockSize - 1) & ~(BlockSize - 1);
+        if (size < 0)
+            return false;
+        assert(size > 0);
+        assert(size - (intptr_t)sizeof(block) >= bytes);
+        auto head = allocate_block(size);
+        head->size = size;
+        head->owned = true;
+        push_block(head);
+        return true;
+    }
+
+    block* allocate_block(intptr_t size) {
+        block *ptr = reinterpret_cast<block*>(allocator_traits_type::allocate(*this, size));
+        assert((reinterpret_cast<intptr_t>(ptr) & (alignof(block) - 1)) == 0);
+        return ptr;
+    }
+
+    void push_block(block* head) {
+        state_.block_ptr_ = reinterpret_cast<intptr_t>(head) + sizeof(block);
+        state_.block_end_ = reinterpret_cast<intptr_t>(head) + head->size;
+
+        for(intptr_t i = 0; i < (intptr_t)head->size; i += BlockSize) {
+            index_.emplace_back(std::make_pair<block*, intptr_t>(
+                i == 0 ? head : nullptr, state_.block_ptr_ + i * (intptr_t)BlockSize));
+        }
+
+        state_.index_size_ = index_.size();
+    }
+
+    void deallocate_block(block* ptr) {
+        assert(ptr->owned);
+        allocator_traits_type::deallocate(*this, reinterpret_cast<uint8_t*>(ptr), ptr->size);
+    }
+
+    void deallocate_blocks(intptr_t end) {
+        for(std::size_t i = end + 1; i < index_.size(); ++i) {
+            if (index_[i].first && index_[i].first->owned) {
+                deallocate_block(index_[i].first);
+            }
+        }
+
+        index_.resize(end + 1);
+    }
+
+    constexpr std::size_t log2(std::size_t n) { return ((n<2) ? 1 : 1 + log2(n/2)); }
+
+public:
+    using resource_mark_type = resource_mark< small_ptr_counted_arena< MinSize, BlockSize, Allocator >, state >;
+
+    static constexpr std::size_t MinAllocationSize = MinSize;
+    static_assert(((MinAllocationSize) & (MinAllocationSize - 1)) == 0);
+
+    small_ptr_counted_arena() = default;
+
+    template< typename T, std::size_t N > small_ptr_counted_arena(T(&buffer)[N])
+        : small_ptr_counted_arena(reinterpret_cast<uint8_t*>(buffer), N * sizeof(T)) {
+        static_assert(std::is_trivial_v<T>);
+        static_assert(N * sizeof(T) > sizeof(block));
+        assert(N == BlockSize);
+    }
+
+    small_ptr_counted_arena(uint8_t* buffer, std::size_t size) {
+        assert(size > sizeof(block));
+        assert(size == BlockSize);
+        auto head = reinterpret_cast<block*>(buffer);
+        block_initial_ = head;
+        head->owned = false;
+        head->size = size;
+        push_block(head);
+    }
+
+    ~small_ptr_counted_arena() {
+        deallocate_blocks(0);
+    }
+
+    uint32_t allocate(intptr_t size, intptr_t alignment) {
+        assert((alignment & (alignment - 1)) == 0);
+        intptr_t padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+        intptr_t capacity = state_.block_end_ - state_.block_ptr_ - padding;
+        if (capacity < size) {
+            if (std::numeric_limits<intptr_t>::max() - (alignment - 1) < size)
+                return 0;
+            if (!request_block(size + (alignment - 1)))
+                return 0;
+            padding = -(uintptr_t)state_.block_ptr_ & (alignment - 1);
+            assert(size <= state_.block_end_ - state_.block_ptr_ - padding);
+        }
+        intptr_t ptr = state_.block_ptr_ + padding;
+        assert((ptr & (alignment - 1)) == 0);
+        state_.block_ptr_ = ptr + size;
+        state_.allocated_ += size;
+        assert(!index_.empty());
+        return ((index_.size() - 1) << (log2(BlockSize) - 1)) | (ptr - index_.back().second);
+    }
+
+    void deallocate(uint32_t, std::size_t size) {
+        state_.allocated_ -= size;
+        assert(state_.allocated_ >= 0);
+        if (state_.allocated_ == 0) {
+            deallocate_blocks(0);
+            state_ = state();
+            if (block_initial_)
+                push_block(block_initial_);
+        }
+    }
+
+    void* address(intptr_t index) {
+        index *= MinAllocationSize;
+        auto hi = index >> (log2(BlockSize) - 1);
+        auto lo = index & (BlockSize - 1);
+        return reinterpret_cast<void*>(index_[hi].second + lo);
+    }
+
+    uint32_t index(void* ptr) {
+        for(std::size_t i = 0; i < index_.size(); ++i) {
+            uintptr_t lo = (uintptr_t)ptr - (uintptr_t)index_[i].second;
+            if (lo < BlockSize) {
+                return (i << (log2(BlockSize) - 1)) | lo;
+            }
+        }
+
+        std::abort();
+    }
+
+    state get_state() const { return state_; }
+
+    void set_state(const state& s) {
+        deallocate_blocks(s.index_size_);
+        state_ = s;
+    }
 };
 
 #if 1
@@ -332,7 +500,20 @@ struct small_ptr_mmap_arena_factory {
     }
 };
 
-template <typename T, typename Factory = small_ptr_mmap_arena_factory>
+small_ptr_counted_arena<1, 1<<16> a;
+
+struct small_ptr_counted_arena_factory {
+    using arena_type = small_ptr_counted_arena<1, 1<<16>;
+    using resource_mark_type = arena_type::resource_mark_type;
+
+    static arena_type* get() {
+        //static uint8_t buffer[1<<16];
+        static arena_type arena;
+        return &arena;
+    }
+};
+
+template <typename T, typename Factory = small_ptr_counted_arena_factory>
 class small_ptr_arena_allocator {
     template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
 

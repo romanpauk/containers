@@ -15,11 +15,12 @@ template< typename Allocator > static void arena_allocator_allocate(benchmark::S
         uint8_t data[64];
     };
 
-    static uint8_t buffer[1<<17];
+    static uint8_t buffer[1<<16];
     uintptr_t ptr = 0;
     for (auto _ : state) {
-        containers::arena< Allocator > arena(buffer, 1<<20);
+        containers::arena< Allocator > arena(buffer, 1<<16);
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
+        auto rm = allocator.resource_mark();
 
         for (size_t i = 0; i < (size_t)state.range(); ++i)
             ptr += (uintptr_t)allocator.allocate(1);
@@ -36,7 +37,7 @@ template< typename Allocator > static void arena_allocator_allocate_nobuffer(ben
 
     uintptr_t ptr = 0;
     for (auto _ : state) {
-        containers::arena< Allocator > arena(1<<20);
+        containers::arena< Allocator > arena(1<<16);
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
 
         for (size_t i = 0; i < (size_t)state.range(); ++i)
