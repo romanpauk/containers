@@ -9,6 +9,8 @@
 
 #include <benchmark/benchmark.h>
 
+const int N = 1<<24;
+
 template< typename Allocator > static void small_ptr_arena_allocator_allocate(benchmark::State& state) {
     struct Class {
         uint8_t data[64];
@@ -28,5 +30,5 @@ template< typename Allocator > static void small_ptr_arena_allocator_allocate(be
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK_TEMPLATE(small_ptr_arena_allocator_allocate, std::allocator<char>)->Range(1, 1<<24)->UseRealTime();
+BENCHMARK_TEMPLATE(small_ptr_arena_allocator_allocate, std::allocator<char>)->Range(1, N)->UseRealTime();
 

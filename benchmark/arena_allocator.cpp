@@ -10,6 +10,8 @@
 
 #include <benchmark/benchmark.h>
 
+static const int N = 1 << 24;
+
 template< typename Allocator > static void arena_allocator_allocate(benchmark::State& state) {
     struct Class {
         uint8_t data[64];
@@ -17,8 +19,8 @@ template< typename Allocator > static void arena_allocator_allocate(benchmark::S
 
     static uint8_t buffer[1<<16];
     uintptr_t ptr = 0;
+    containers::arena< Allocator > arena(buffer, 1<<16);
     for (auto _ : state) {
-        containers::arena< Allocator > arena(buffer, 1<<16);
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
         auto rm = allocator.resource_mark();
 
@@ -36,9 +38,10 @@ template< typename Allocator > static void arena_allocator_allocate_nobuffer(ben
     };
 
     uintptr_t ptr = 0;
+    containers::arena< Allocator > arena(1<<16);
     for (auto _ : state) {
-        containers::arena< Allocator > arena(1<<16);
         containers::arena_allocator< Class, decltype(arena) > allocator(arena);
+        auto rm = allocator.resource_mark();
 
         for (size_t i = 0; i < (size_t)state.range(); ++i)
             ptr += (uintptr_t)allocator.allocate(1);
@@ -48,7 +51,7 @@ template< typename Allocator > static void arena_allocator_allocate_nobuffer(ben
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK_TEMPLATE(arena_allocator_allocate, std::allocator<char>)->Range(1, 1<<24)->UseRealTime();
-BENCHMARK_TEMPLATE(arena_allocator_allocate_nobuffer, std::allocator<char>)->Range(1, 1<<24)->UseRealTime();
-BENCHMARK_TEMPLATE(arena_allocator_allocate, containers::page_allocator<char>)->Range(1, 1<<24)->UseRealTime();
-BENCHMARK_TEMPLATE(arena_allocator_allocate_nobuffer, containers::page_allocator<char>)->Range(1, 1<<24)->UseRealTime();
+BENCHMARK_TEMPLATE(arena_allocator_allocate, std::allocator<char>)->Range(1, N)->UseRealTime();
+//BENCHMARK_TEMPLATE(arena_allocator_allocate_nobuffer, std::allocator<char>)->Range(1, N)->UseRealTime();
+BENCHMARK_TEMPLATE(arena_allocator_allocate, containers::page_allocator<char>)->Range(1, N)->UseRealTime();
+//BENCHMARK_TEMPLATE(arena_allocator_allocate_nobuffer, containers::page_allocator<char>)->Range(1, N)->UseRealTime();
