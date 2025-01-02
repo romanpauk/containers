@@ -11,24 +11,13 @@
 
 namespace containers {
 
-struct thread_arena_factory {
+template< std::size_t BlockSize > struct thread_arena_factory {
     using arena_type = arena<>;
     using resource_mark_type = arena_type::resource_mark_type;
 
     static arena_type* get() {
-        static thread_local uint8_t buffer[1<<10];
-        static thread_local arena_type arena(buffer, 1<<16);
-        return &arena;
-    }
-};
-
-struct thread_counted_arena_factory {
-    using arena_type = counted_arena<>;
-    using resource_mark_type = arena_type::resource_mark_type;
-
-    static arena_type* get() {
-        static thread_local uint8_t buffer[1<<10];
-        static thread_local arena_type arena(buffer, 1<<16);
+        static thread_local uint8_t buffer[BlockSize];
+        static thread_local arena_type arena(buffer, BlockSize);
         return &arena;
     }
 };
@@ -43,7 +32,7 @@ struct thread_mmap_arena_factory {
     }
 };
 
-template <typename T, typename ArenaFactory = thread_counted_arena_factory > class thread_arena_allocator {
+template <typename T, typename ArenaFactory = thread_arena_factory< 1<<16 > > class thread_arena_allocator {
 public:
     using value_type    = T;
     using resource_mark_type = typename ArenaFactory::resource_mark_type;
@@ -73,7 +62,6 @@ template <typename T, typename U, typename ArenaFactory>
 bool operator != (const thread_arena_allocator<T, ArenaFactory>& x, const thread_arena_allocator<U, ArenaFactory>& y) noexcept {
     return !(x == y);
 }
-
 
 }
 

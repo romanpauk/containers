@@ -66,6 +66,7 @@ target_include_directories(containers INTERFACE include)
 target_sources(containers INTERFACE
     include/containers/allocators/arena_allocator.h
     include/containers/allocators/page_allocator.h
+    include/containers/allocators/small_ptr_arena_allocator.h
     include/containers/growable_array.h
     include/containers/evictable_unordered_map.h
     README.md
@@ -82,6 +83,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         benchmark/evictable_unordered_map.cpp
         benchmark/growable_array.cpp
         benchmark/main.cpp
+        benchmark/small_ptr_arena_allocator.cpp
         benchmark/thread_arena_allocator.cpp
     )
 
@@ -98,6 +100,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
 
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
+    target_sanitize(CONTAINERS containers_benchmark)
 endif()
 
 if(CONTAINERS_ENABLE_TESTING)
@@ -105,6 +108,7 @@ if(CONTAINERS_ENABLE_TESTING)
         test/arena_allocator.cpp
         test/evictable_unordered_map.cpp
         test/growable_array.cpp
+        test/small_ptr_arena_allocator.cpp
         test/thread_arena_allocator.cpp
     )
 
