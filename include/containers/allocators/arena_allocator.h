@@ -276,8 +276,11 @@ template <typename T> static constexpr std::size_t arena_allocator_alignment_v =
 template <
     typename T,
     typename Arena = arena<>,
-    std::size_t Alignment = arena_allocator_alignment_v<T>
+    std::size_t MinAlignment = alignof(std::max_align_t)
 > class arena_allocator {
+    static_assert((MinAlignment & (MinAlignment - 1)) == 0);
+    static constexpr std::size_t Alignment = std::max(MinAlignment, arena_allocator_alignment_v<T>);
+
     template <typename U, typename ArenaU, std::size_t AlignmentU> friend class arena_allocator;
     Arena* arena_ = nullptr;
 
@@ -285,13 +288,7 @@ public:
     using value_type    = T;
     using resource_mark_type = typename Arena::resource_mark_type;
 
-    template< typename U > struct rebind {
-        using other = arena_allocator<
-            U, Arena,
-            // Respect non-default alignment while rebinding
-            alignof(T) != Alignment ? Alignment : arena_allocator_alignment_v<U>
-        >;
-    };
+    template< typename U > struct rebind { using other = arena_allocator< U, Arena, MinAlignment >; };
 
     arena_allocator(Arena& arena) noexcept
         : arena_(&arena) {}
@@ -302,7 +299,9 @@ public:
     value_type* allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
             return nullptr;
-        return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
+
+        static_assert(Alignment >= alignof(T));
+        return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, Alignment));
     }
 
     void deallocate(value_type* ptr, std::size_t n) noexcept {
