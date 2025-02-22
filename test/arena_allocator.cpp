@@ -40,11 +40,10 @@ TEST(arena_allocator_test, resource_mark) {
 }
 
 TEST(arena_allocator_test, void_allocator) {
-    uint8_t buffer[128];
-    containers::arena< containers::page_allocator<char> > arena(buffer, sizeof(buffer), 1<<20);
-    containers::arena_allocator< char, decltype(arena) > allocator1(arena);
-    containers::arena_allocator< void, decltype(arena) > void_allocator(allocator1);
-    containers::arena_allocator< char, decltype(arena) > allocator2(void_allocator);
+    containers::arena<> arena(1<<20);
+    containers::arena_allocator< char > allocator1(arena);
+    containers::arena_allocator< void > void_allocator(allocator1);
+    containers::arena_allocator< char > allocator2(void_allocator);
 
     // TODO: test operator ==
 }

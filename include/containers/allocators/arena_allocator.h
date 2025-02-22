@@ -276,7 +276,7 @@ template <typename T> static constexpr std::size_t arena_allocator_alignment_v =
 template <
     typename T,
     typename Arena = arena<>,
-    std::size_t Alingment = arena_allocator_alignment_v<T>
+    std::size_t Alignment = arena_allocator_alignment_v<T>
 > class arena_allocator {
     template <typename U, typename ArenaU, std::size_t AlignmentU> friend class arena_allocator;
     Arena* arena_ = nullptr;
@@ -284,6 +284,14 @@ template <
 public:
     using value_type    = T;
     using resource_mark_type = typename Arena::resource_mark_type;
+
+    template< typename U > struct rebind {
+        using other = arena_allocator<
+            U, Arena,
+            // Respect non-default alignment while rebinding
+            alignof(T) != Alignment ? Alignment : arena_allocator_alignment_v<U>
+        >;
+    };
 
     arena_allocator(Arena& arena) noexcept
         : arena_(&arena) {}
