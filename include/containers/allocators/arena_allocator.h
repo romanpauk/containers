@@ -291,6 +291,23 @@ public:
     resource_mark_type resource_mark() { return arena_; }
 };
 
+template < typename Arena > class arena_allocator<void, Arena> {
+    template <typename U, typename ArenaU> friend class arena_allocator;
+    Arena* arena_ = nullptr;
+
+public:
+    using value_type    = void;
+    using resource_mark_type = typename Arena::resource_mark_type;
+
+    arena_allocator(Arena& arena) noexcept
+        : arena_(&arena) {}
+
+    template <typename U> arena_allocator(const arena_allocator<U, Arena>& other) noexcept
+        : arena_(other.arena_) {}
+
+    resource_mark_type resource_mark() { return arena_; }
+};
+
 template <typename T, typename U, typename Arena>
 bool operator == (const arena_allocator<T, Arena>& lhs, const arena_allocator<U, Arena>& rhs) noexcept {
     return lhs.arena_ == rhs.arena_;
