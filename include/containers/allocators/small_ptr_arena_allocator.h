@@ -296,7 +296,7 @@ template< typename T, typename Factory > class small_ptr {
     using arena_type = typename Factory::arena_type;
     static_assert(sizeof(T) >= arena_type::MinAllocationSize);
 
-    template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
+    template <typename U, typename FactoryU, std::size_t AlignmentU> friend class small_ptr_arena_allocator;
 
     uint32_t index_ = 0;
 
@@ -527,24 +527,30 @@ private:
 
 template< std::size_t BlockSize > typename small_ptr_arena_factory< BlockSize >::arena_type small_ptr_arena_factory< BlockSize >::arena_;
 
-template <typename T, typename Factory = small_ptr_arena_factory<> >
+template <typename T, typename Factory = small_ptr_arena_factory<>, std::size_t MinAlignment = alignof(std::max_align_t) >
 class small_ptr_arena_allocator {
-    template <typename U, typename FactoryU> friend class small_ptr_arena_allocator;
+    static_assert((MinAlignment & (MinAlignment - 1)) == 0);
+    template <typename U, typename FactoryU, std::size_t AlignmentU> friend class small_ptr_arena_allocator;
 
 public:
     using resource_mark_type = typename Factory::resource_mark_type;
 
     using pointer = small_ptr<T, Factory>;
     using value_type = T;
+    static constexpr std::size_t alignment = std::max(MinAlignment, arena_allocator_alignment_v<T>);
+
+    template< typename U > struct rebind {
+        using other = small_ptr_arena_allocator<U, Factory, MinAlignment>;
+    };
 
     small_ptr_arena_allocator() = default;
-    template <typename U> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, Factory>&) noexcept
+    template <typename U, std::size_t AlignmentU> small_ptr_arena_allocator(const small_ptr_arena_allocator<U, Factory, AlignmentU>&) noexcept
     {}
 
     pointer allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
             return 0u;
-        return Factory::get()->allocate(sizeof(T) * n, alignof(T));
+        return Factory::get()->allocate(sizeof(T) * n, alignment);
     }
 
     void deallocate(pointer ptr, std::size_t n) noexcept {
@@ -554,13 +560,13 @@ public:
     resource_mark_type resource_mark() { return Factory::get(); }
 };
 
-template <typename T, typename U, typename Factory>
-bool operator == (const small_ptr_arena_allocator<T, Factory>&, const small_ptr_arena_allocator<U, Factory>&) noexcept {
+template <typename T, std::size_t AlignmentT, typename U, std::size_t AlignmentU, typename Factory>
+bool operator == (const small_ptr_arena_allocator<T, Factory, AlignmentT>&, const small_ptr_arena_allocator<U, Factory, AlignmentU>&) noexcept {
     return true; // TODO
 }
 
-template <typename T, typename U, typename Factory>
-bool operator != (const small_ptr_arena_allocator<T, Factory>& x, const small_ptr_arena_allocator<U, Factory>& y) noexcept {
+template <typename T, std::size_t AlignmentT, typename U, std::size_t AlignmentU, typename Factory>
+bool operator != (const small_ptr_arena_allocator<T, Factory, AlignmentT>& x, const small_ptr_arena_allocator<U, Factory, AlignmentU>& y) noexcept {
     return !(x == y);
 }
 

@@ -39,3 +39,41 @@ TEST(arena_allocator_test, resource_mark) {
     ASSERT_EQ(alloc(), alloc());
 }
 
+TEST(arena_allocator_test, void_allocator) {
+    containers::arena<> arena(1<<20);
+    containers::arena_allocator< char > allocator1(arena);
+    containers::arena_allocator< void > void_allocator(allocator1);
+    containers::arena_allocator< char > allocator2(void_allocator);
+
+    // TODO: test operator ==
+}
+
+template< std::size_t Alignment > struct Type {
+    alignas(Alignment) char data;
+};
+
+TEST(arena_allocator_test, alignment) {
+    containers::arena<> arena(1<<20);
+
+    {
+        containers::arena_allocator< Type<1>, decltype(arena), 1 > allocator(arena);
+        ASSERT_EQ(allocator.alignment, 1);
+    }
+    {
+        containers::arena_allocator< Type<4>, decltype(arena), 1 > allocator(arena);
+        ASSERT_EQ(allocator.alignment, 4);
+    }
+    {
+        containers::arena_allocator< Type<1>, decltype(arena), 32 > allocator(arena);
+        ASSERT_EQ(allocator.alignment, 32);
+    }
+    {
+        containers::arena_allocator< Type<8>, decltype(arena), 32 > allocator(arena);
+        ASSERT_EQ(allocator.alignment, 32);
+    }
+    {
+        containers::arena_allocator< Type<64>, decltype(arena), 32 > allocator(arena);
+        ASSERT_EQ(allocator.alignment, 64);
+    }
+}
+

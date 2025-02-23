@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -264,24 +265,43 @@ public:
     }
 };
 
-template <typename T, typename Arena = arena<> > class arena_allocator {
-    template <typename U, typename ArenaU> friend class arena_allocator;
+template <typename T> struct arena_allocator_alignment {
+    static constexpr std::size_t value = alignof(
+        std::conditional_t< std::is_same_v<T, void>, std::max_align_t, T >
+    );
+};
+
+template <typename T> static constexpr std::size_t arena_allocator_alignment_v = arena_allocator_alignment<T>::value;
+
+template <
+    typename T,
+    typename Arena = arena<>,
+    std::size_t MinAlignment = alignof(std::max_align_t)
+> class arena_allocator {
+    static_assert((MinAlignment & (MinAlignment - 1)) == 0);
+
+    template <typename U, typename ArenaU, std::size_t AlignmentU> friend class arena_allocator;
     Arena* arena_ = nullptr;
 
 public:
     using value_type    = T;
     using resource_mark_type = typename Arena::resource_mark_type;
+    static constexpr std::size_t alignment = std::max(MinAlignment, arena_allocator_alignment_v<T>);
+
+    template< typename U > struct rebind { using other = arena_allocator< U, Arena, MinAlignment >; };
 
     arena_allocator(Arena& arena) noexcept
         : arena_(&arena) {}
 
-    template <typename U> arena_allocator(const arena_allocator<U, Arena>& other) noexcept
+    template <typename U, std::size_t AlignmentU> arena_allocator(const arena_allocator<U, Arena, AlignmentU>& other) noexcept
         : arena_(other.arena_) {}
 
     value_type* allocate(std::size_t n) {
         if (std::numeric_limits<intptr_t>::max() / sizeof(T) < n)
             return nullptr;
-        return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignof(T)));
+
+        static_assert(alignment >= alignof(T));
+        return reinterpret_cast<value_type*>(arena_->allocate(sizeof(T) * n, alignment));
     }
 
     void deallocate(value_type* ptr, std::size_t n) noexcept {
@@ -291,13 +311,30 @@ public:
     resource_mark_type resource_mark() { return arena_; }
 };
 
-template <typename T, typename U, typename Arena>
-bool operator == (const arena_allocator<T, Arena>& lhs, const arena_allocator<U, Arena>& rhs) noexcept {
+template < typename Arena, std::size_t Alignment > class arena_allocator<void, Arena, Alignment> {
+    template <typename U, typename ArenaU, std::size_t AlignmentU> friend class arena_allocator;
+    Arena* arena_ = nullptr;
+
+public:
+    using value_type    = void;
+    using resource_mark_type = typename Arena::resource_mark_type;
+
+    arena_allocator(Arena& arena) noexcept
+        : arena_(&arena) {}
+
+    template <typename U, std::size_t AlignmentU> arena_allocator(const arena_allocator<U, Arena, AlignmentU>& other) noexcept
+        : arena_(other.arena_) {}
+
+    resource_mark_type resource_mark() { return arena_; }
+};
+
+template <typename T, std::size_t AlignmentT, typename U, std::size_t AlignmentU, typename Arena>
+bool operator == (const arena_allocator<T, Arena, AlignmentT>& lhs, const arena_allocator<U, Arena, AlignmentU>& rhs) noexcept {
     return lhs.arena_ == rhs.arena_;
 }
 
-template <typename T, typename U, typename Arena>
-bool operator != (const arena_allocator<T, Arena>& x, const arena_allocator<U, Arena>& y) noexcept {
+template <typename T, std::size_t AlignmentT, typename U, std::size_t AlignmentU, typename Arena>
+bool operator != (const arena_allocator<T, Arena, AlignmentT>& x, const arena_allocator<U, Arena, AlignmentU>& y) noexcept {
     return !(x == y);
 }
 
