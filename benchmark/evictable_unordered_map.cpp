@@ -6,6 +6,9 @@
 //
 
 #include <containers/evictable_unordered_map.h>
+#include <containers/eviction/lru.h>
+#include <containers/eviction/sieve.h>
+
 #include <containers/allocators/arena_allocator.h>
 
 #include <benchmark/benchmark.h>
@@ -30,7 +33,9 @@ template< typename Container > static void container_emplace(benchmark::State& s
 }
 
 template< typename Container > static void container_find(benchmark::State& state) {
-    Container container;
+    containers::arena arena(buffer, 1<<20);
+    containers::arena_allocator<void> allocator(arena);
+    Container container(allocator);
     for (size_t i = 0; i < (size_t)state.range(); ++i) {
         container.emplace(i, i);
     }
@@ -46,7 +51,9 @@ template< typename Container > static void container_find(benchmark::State& stat
 }
 
 template< typename Container > static void container_operator_array(benchmark::State& state) {
-    Container container;
+    containers::arena arena(buffer, 1<<20);
+    containers::arena_allocator<void> allocator(arena);
+    Container container(allocator);
     for (size_t i = 0; i < (size_t)state.range(); ++i) {
         container.emplace(i, i);
     }
@@ -61,11 +68,22 @@ template< typename Container > static void container_operator_array(benchmark::S
     state.SetItemsProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK_TEMPLATE(container_emplace, std::unordered_map< size_t, size_t, std::hash<size_t>, std::equal_to<size_t>, containers::arena_allocator< std::pair< const size_t, size_t > > >)->Range(1, N);
-BENCHMARK_TEMPLATE(container_emplace, containers::evictable_unordered_map< size_t, size_t, std::hash<size_t>, std::equal_to<size_t>, containers::arena_allocator< std::pair< const size_t, size_t > > >)->Range(1, N);
+using unordered_map = std::unordered_map< size_t, size_t, std::hash<size_t>, std::equal_to<size_t>, containers::arena_allocator< std::pair< const size_t, size_t > > >;
 
-BENCHMARK_TEMPLATE(container_find, std::unordered_map< size_t, size_t >)->Range(1, N);
-BENCHMARK_TEMPLATE(container_find, containers::evictable_unordered_map< size_t, size_t >)->Range(1, N);
+using evictable_unordered_map_lru = containers::evictable_unordered_map< size_t, size_t, std::hash<size_t>, std::equal_to<size_t>, containers::arena_allocator< std::pair< const size_t, size_t > >, containers::eviction::lru< std::pair< const size_t, size_t > > >;
 
-BENCHMARK_TEMPLATE(container_operator_array, std::unordered_map< size_t, size_t >)->Range(1, N);
-BENCHMARK_TEMPLATE(container_operator_array, containers::evictable_unordered_map< size_t, size_t >)->Range(1, N);
+using evictable_unordered_map_sieve = containers::evictable_unordered_map< size_t, size_t, std::hash<size_t>, std::equal_to<size_t>, containers::arena_allocator< std::pair< const size_t, size_t > >, containers::eviction::sieve< std::pair< const size_t, size_t > > >;
+
+BENCHMARK_TEMPLATE(container_emplace, unordered_map)->Range(1, N);
+BENCHMARK_TEMPLATE(container_emplace, evictable_unordered_map_lru)->Range(1, N);
+BENCHMARK_TEMPLATE(container_emplace, evictable_unordered_map_sieve)->Range(1, N);
+
+BENCHMARK_TEMPLATE(container_find, unordered_map)->Range(1, N);
+BENCHMARK_TEMPLATE(container_find, evictable_unordered_map_lru)->Range(1, N);
+BENCHMARK_TEMPLATE(container_find, evictable_unordered_map_sieve)->Range(1, N);
+
+
+BENCHMARK_TEMPLATE(container_operator_array, unordered_map)->Range(1, N);
+BENCHMARK_TEMPLATE(container_operator_array, evictable_unordered_map_lru)->Range(1, N);
+BENCHMARK_TEMPLATE(container_operator_array, evictable_unordered_map_sieve)->Range(1, N);
+
