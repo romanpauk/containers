@@ -110,6 +110,7 @@ if(CONTAINERS_ENABLE_TESTING)
         test/growable_array.cpp
         test/small_ptr_arena_allocator.cpp
         test/thread_arena_allocator.cpp
+        test/vbr.cpp
     )
 
     add_test(NAME containers_test COMMAND containers_test)
