@@ -34,6 +34,7 @@ namespace containers {
 
         using value_type = std::atomic<T>;
         static constexpr std::size_t size() { return Bits; }
+        static constexpr std::size_t word_size() { return Size; }
 
         void clear(std::memory_order order = std::memory_order_relaxed) {
             for(std::size_t i = 0; i < Size; ++i)
@@ -57,6 +58,11 @@ namespace containers {
             assert(index < Bits);
             auto value = T{1} << (index & (sizeof(T) * 8 - 1));
             return values_[index/sizeof(T)/8].load(order) & value;
+        }
+
+        T exchange_word(std::size_t index, T value, std::memory_order order = std::memory_order_relaxed) {
+            assert(index < Size);
+            return values_[index].exchange(value, order);
         }
 
         bool empty(std::memory_order order = std::memory_order_relaxed) const {
