@@ -31,10 +31,19 @@ namespace containers {
         }
     }
 
+    enum class PageState {
+        Decommitted = 0,
+        Active = 1,
+        Full = 2,
+        Queued = 3,
+    };
+
     // TODO: this will need another page layer to minimize number of mmap calls
     template< typename Page, std::size_t PageCount, std::size_t PageSize > struct vbr_page_allocator {
         static_assert(sizeof(Page) <= PageSize);
 
+        // TODO: VBR requires per-page version increments only if page moves from deallocated state,
+        // yet this code increments it much more often.
         std::atomic<uint64_t> version_ = 0x100;
 
         void* mmap_ = nullptr;
@@ -60,6 +69,12 @@ namespace containers {
         uint64_t get_version() { return version_.fetch_add(1, std::memory_order_relaxed); }
 
         Page* allocate_page() {
+            auto p = allocate_page_impl();
+            assert(p->state() & (int)PageState::Active);
+            return p;
+        }
+
+        Page* allocate_page_impl() {
             std::lock_guard lock(mutex_);
 
             while (!queued_pages_.empty()) {
@@ -70,13 +85,14 @@ namespace containers {
                 // Construct expected state as in case of deallocated page,
                 // page will be zeroed, so we can't trust it unless we
                 // successfully CAS into it for the first time.
-                uint64_t state = (p->state() & ~0xFF) | Page::queued;
-                if (p->update_state_version(state, get_version() | Page::active)) {
+                uint64_t state = (p->state() & ~0xFF) | (int)PageState::Queued;
+                if (p->update_state_version(state, get_version() | (int)PageState::Active)) {
                     // Page state was queued (= not deallocated)
                   if (p->refresh_allocations()) {
                     return p;
                   } else {
                     // TODO: can this happen?
+                      std::abort();
                   }
                }
             }
@@ -90,8 +106,7 @@ namespace containers {
                     std::abort();
                 }
 
-                // TODO: update version
-                new (p) Page();
+                new (p) Page(get_version() | (int)PageState::Active);
                 return p;
             }
 
@@ -111,12 +126,13 @@ namespace containers {
             }
 
             // TODO: version
-            new(p) Page();
-            assert(p->state() == Page::active);
+            new(p) Page(get_version() | (int)PageState::Active);
             return p;
         }
 
         void queue_page(Page* p) {
+            assert(p->state() & PageState::Queued);
+
             // TODO: we can queue a page that was deallocated. Should not matter
             // as it is handled in allocate_page().
 
@@ -126,6 +142,8 @@ namespace containers {
         }
 
         void decommit_page(Page* p) {
+            //assert(p->state() & Page::decommitted);
+
             // TODO: we can deallocate page that could still be queued later.
             // Should not matter as it is handled in allocate_page().
             //
@@ -136,7 +154,7 @@ namespace containers {
                 std::abort();
             }
 
-            assert(p->state() == Page::decommitted);
+            assert(p->state() == 0);
 
             std::lock_guard lock(mutex_);
             decommitted_pages_.emplace_back(p);
@@ -158,13 +176,6 @@ namespace containers {
         static_assert(PageElementCount < 256);
 
         struct page {
-            enum state {
-                decommitted = 0,
-                active = 1,
-                full = 2,
-                queued = 3,
-            };
-
             // Local, for owning thread only
             uint8_t allocations_size_;
             uint8_t allocations_[PageElementCount];
@@ -178,13 +189,13 @@ namespace containers {
 
             static constexpr uint8_t capacity() { return PageElementCount; }
 
-            page() {
+            page(uint64_t state) {
                 for (std::size_t i = 0; i < PageElementCount; ++i)
                     allocations_[i] = PageElementCount - i - 1;
                 allocations_size_ = PageElementCount;
                 deallocations_.clear();
                 deallocations_size_.store(0, std::memory_order_relaxed);
-                state_.store(active, std::memory_order_relaxed);
+                state_.store(state, std::memory_order_relaxed);
             }
 
             uint8_t allocations_size() const { return allocations_size_; }
@@ -253,11 +264,11 @@ namespace containers {
                 T* ptr = page_->allocate();
 
                 uint64_t state = page_->state();
-                assert(state & page::active);
-                if (page_->update_state(state, page::full)) {
+                assert(state & (int)PageState::Active);
+                if (page_->update_state(state, PageState::Full)) {
                     state |= page::full;
                     if (page_->refresh_allocations()) {
-                        if (page_->update_state(state, page::active))
+                        if (page_->update_state(state, PageState::Active))
                             return ptr;
                     }
                 }
@@ -284,19 +295,19 @@ namespace containers {
             //
             uint64_t state = p->state();
             p->deallocate(ptr);
-            if (state & page::active)
+            if (state & (int)PageState::Active)
                 return;
 
-            assert((state & page::full) || (state & page::queued));
+            assert((state & (int)PageState::Full) || (state & (int)PageState::Queued));
 
-            if (!(state & page::queued)) {
-                if(p->update_state(state, page::queued)) {
+            if (!(state & (int)PageState::Queued)) {
+                if(p->update_state(state, PageState::Queued)) {
                     page_allocator_.queue_page(p);
                 }
             }
 
             if (p->capacity() == p->deallocations_size()) {
-                if (p->update_state(state, page::decommitted)) {
+                if (p->update_state(state, PageState::Decommitted)) {
                     page_allocator_.decommit_page(p);
                 }
             }

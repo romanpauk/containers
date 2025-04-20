@@ -22,11 +22,11 @@ TEST(vbr, basic_operations) {
 
     containers::vbr_allocator<queue_node, 1<<30> allocator;
     auto* p = allocator.page_allocator_.allocate_page();
-    assert(p->state() == 1);
+    assert(p->state() & (int)containers::PageState::Active);
     allocator.page_allocator_.decommit_page(p);
-    assert(p->state() == 0);
+    assert(p->state() == (int)containers::PageState::Decommitted);
     auto* p2 = allocator.page_allocator_.allocate_page();
     assert(p == p2);
-    assert(p2->state() == 1);
+    assert(p2->state() & (int)containers::PageState::Active);
 }
 
