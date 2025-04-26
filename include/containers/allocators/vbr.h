@@ -42,8 +42,6 @@ namespace containers {
     template< typename Page, std::size_t PageCount, std::size_t PageSize > struct vbr_page_allocator {
         static_assert(sizeof(Page) <= PageSize);
 
-        // TODO: VBR requires per-page version increments only if page moves from deallocated state,
-        // yet this code increments it much more often.
         std::atomic<uint64_t> version_ = 0x100;
 
         void* mmap_ = nullptr;
@@ -131,7 +129,7 @@ namespace containers {
         }
 
         void queue_page(Page* p) {
-            assert(p->state() & PageState::Queued);
+            assert(p->state() & (int)PageState::Queued);
 
             // TODO: we can queue a page that was deallocated. Should not matter
             // as it is handled in allocate_page().
@@ -159,6 +157,28 @@ namespace containers {
             std::lock_guard lock(mutex_);
             decommitted_pages_.emplace_back(p);
             std::make_heap(decommitted_pages_.begin(), decommitted_pages_.end());
+        }
+    };
+
+    template< typename T > struct alignas(16) vbr_ptr {
+        vbr_ptr() = default;
+        vbr_ptr(std::nullptr_t) {}
+        vbr_ptr(uint64_t v, uint64_t p): version(v), ptr(p) {}
+
+        mutable uint64_t version = 0;
+        mutable uint64_t ptr = 0;
+
+        operator bool() const {
+            return ptr != 0;
+        }
+
+        bool operator == (vbr_ptr<T> other) {
+            return version == other.version &&
+                ptr == other.ptr;
+        }
+
+        bool operator == (std::nullptr_t) {
+            return ptr == 0;
         }
     };
 
@@ -216,9 +236,10 @@ namespace containers {
             }
 
             uint64_t state() const { return state_.load(std::memory_order_relaxed); }
+            uint64_t version() const { return state() & ~0xFF; }
 
-            bool update_state(uint64_t& state, uint8_t value) {
-                return state_.compare_exchange_strong(state, (state & ~0xFF) | value);
+            bool update_state(uint64_t& state, PageState value) {
+                return state_.compare_exchange_strong(state, (state & ~0xFF) | (int)value);
             }
 
             bool update_state_version(uint64_t& state, uint64_t value) {
@@ -233,7 +254,7 @@ namespace containers {
                     auto word = deallocations_.exchange_word(i, 0);
                     auto offset = sizeof(word) * 8 * i;
                     for (std::size_t j = 0; j < sizeof(word) * 8; ++j) {
-                        if (word & (1 << j)) {
+                        if (word & (1ull << j)) {
                             allocations_[allocations_size_++] = offset + j;
                             deallocations += 1;
                         }
@@ -254,25 +275,29 @@ namespace containers {
             page_ = page_allocator_.allocate_page();
         }
 
-        T* allocate() {
+        T* allocate_impl() {
             // unlikely
             if (page_->allocations_size() == 1) {
 
                 // TODO: handle special case here when the page_ is dummy,
                 // so we don't need to allocate in constructor.
+                uint64_t state = page_->state();
+                //if (state == PageState::Dummy) {
+                //    goto allocate_page;
+                //}
 
                 T* ptr = page_->allocate();
-
-                uint64_t state = page_->state();
                 assert(state & (int)PageState::Active);
                 if (page_->update_state(state, PageState::Full)) {
-                    state |= page::full;
+                    state &= ~0xFF;
+                    state |= (int)PageState::Full;
                     if (page_->refresh_allocations()) {
                         if (page_->update_state(state, PageState::Active))
                             return ptr;
                     }
                 }
 
+            //allocate_page:
                 page_ = page_allocator_.allocate_page();
                 return ptr;
             }
@@ -282,6 +307,10 @@ namespace containers {
 
         page* get_page(T* ptr) {
             return (page*)detail::mask(ptr, PageSize);
+        }
+
+        uint64_t get_version(T* ptr) {
+            return ((page*)detail::mask(ptr, PageSize))->state() & ~0xFF;
         }
 
         void deallocate(T* ptr) {
@@ -311,6 +340,28 @@ namespace containers {
                     page_allocator_.decommit_page(p);
                 }
             }
+        }
+
+        vbr_ptr<T> allocate() {
+            T* ptr = allocate_impl();
+            return {get_version(ptr), (uint64_t)ptr};
+        }
+
+        template< typename... Args > void construct(vbr_ptr<T> p, Args&&... args) {
+            new(read(p)) T { std::forward<Args>(args)... };
+        }
+
+        T* read(vbr_ptr<T> p) {
+            return (T*)p.ptr;
+        }
+
+        void destroy(vbr_ptr<T> p) {
+            if (!std::is_trivially_destructible_v<T>)
+                read(p)->~T();
+        }
+
+        void deallocate(vbr_ptr<T> p) {
+            deallocate((T*)p.ptr);
         }
     };
 }
