@@ -17,6 +17,9 @@
 #include <vector>
 
 #include <containers/atomic_bitset.h>
+#include <containers/atomic_bitset_heap.h>
+
+#define VBR_PAGE_ALLOCATOR_ATOMIC
 
 namespace containers {
     namespace detail {
@@ -28,6 +31,17 @@ namespace containers {
         template < typename T > T* mask(T* ptr, std::size_t alignment) {
             assert((alignment & (alignment - 1)) == 0);
             return (T*)((uintptr_t)ptr & ~(alignment - 1));
+        }
+
+        static constexpr std::size_t round_up(std::size_t v) {
+            v--;
+            v |= v >> 1;
+            v |= v >> 2;
+            v |= v >> 4;
+            v |= v >> 8;
+            v |= v >> 16;
+            v++;
+            return v;
         }
     }
 
@@ -47,17 +61,44 @@ namespace containers {
         void* mmap_ = nullptr;
         static constexpr std::size_t MmapSize = PageCount * PageSize + PageSize - 1;
 
-        std::atomic<uintptr_t> memory_ = 0;
+        uintptr_t pages_begin_ = 0;
+        std::atomic<uintptr_t> pages_current_ = 0;
 
-        std::mutex mutex_;
-        std::vector<Page*> queued_pages_;
-        std::vector<Page*> decommitted_pages_;
+    #if !defined(VBR_PAGE_ALLOCATOR_ATOMIC)
+        struct heap {
+            void push(uint64_t value) {
+                std::lock_guard lock(mutex_);
+                heap_.emplace_back(value);
+                std::make_heap(heap_.begin(), heap_.end());
+            }
+
+            bool pop(uint64_t& value) {
+                std::lock_guard lock(mutex_);
+                if (heap_.empty())
+                    return false;
+                std::pop_heap(heap_.begin(), heap_.end());
+                value = heap_.back();
+                heap_.pop_back();
+                return true;
+            }
+
+        private:
+            std::mutex mutex_;
+            std::vector<uint64_t> heap_;
+        };
+
+        heap queued_pages_;
+        heap decommitted_pages_;
+    #else
+        atomic_bitset_heap< uintptr_t, detail::round_up(PageCount) > queued_pages_;
+        atomic_bitset_heap< uintptr_t, detail::round_up(PageCount) > decommitted_pages_;
+    #endif
 
         vbr_page_allocator() {
             mmap_ = mmap(0, MmapSize, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
             if (mmap_ == MAP_FAILED) // TODO:
                 std::abort();
-            memory_ = (uintptr_t)detail::align(mmap_, PageSize);
+            pages_current_ = pages_begin_ = (uintptr_t)detail::align(mmap_, PageSize);
         }
 
         ~vbr_page_allocator() {
@@ -73,12 +114,9 @@ namespace containers {
         }
 
         Page* allocate_page_impl() {
-            std::lock_guard lock(mutex_);
-
-            while (!queued_pages_.empty()) {
-                std::pop_heap(queued_pages_.begin(), queued_pages_.end());
-                auto p = queued_pages_.back();
-                queued_pages_.pop_back();
+            uintptr_t index;
+            while (queued_pages_.pop(index)) {
+                auto p = get_page_at_index(index);
 
                 // Construct expected state as in case of deallocated page,
                 // page will be zeroed, so we can't trust it unless we
@@ -95,10 +133,8 @@ namespace containers {
                }
             }
 
-            while (!decommitted_pages_.empty()) {
-                std::pop_heap(decommitted_pages_.begin(), decommitted_pages_.end());
-                auto p = decommitted_pages_.back();
-                decommitted_pages_.pop_back();
+            while (decommitted_pages_.pop(index)) {
+                auto p = get_page_at_index(index);
 
                 if (mmap(p, PageSize, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) == MAP_FAILED) {
                     std::abort();
@@ -113,7 +149,7 @@ namespace containers {
 
         Page* allocate_new_page() {
             // TODO: overflow
-            uintptr_t address = memory_.fetch_add(PageSize);
+            uintptr_t address = pages_current_.fetch_add(PageSize);
             if (address + sizeof(Page) > (uintptr_t)mmap_ + MmapSize) {
                 // TODO: OOM
                 std::abort();
@@ -133,10 +169,7 @@ namespace containers {
 
             // TODO: we can queue a page that was deallocated. Should not matter
             // as it is handled in allocate_page().
-
-            std::lock_guard lock(mutex_);
-            queued_pages_.emplace_back(p);
-            std::make_heap(queued_pages_.begin(), queued_pages_.end());
+            queued_pages_.push(get_page_index(p));
         }
 
         void decommit_page(Page* p) {
@@ -154,9 +187,18 @@ namespace containers {
 
             assert(p->state() == 0);
 
-            std::lock_guard lock(mutex_);
-            decommitted_pages_.emplace_back(p);
-            std::make_heap(decommitted_pages_.begin(), decommitted_pages_.end());
+            decommitted_pages_.push(get_page_index(p));
+        }
+
+        uintptr_t get_page_index(Page* p) {
+            assert((uintptr_t)p >= pages_begin_);
+            assert((uintptr_t)p + sizeof(Page) <= (uintptr_t)mmap_ + MmapSize);
+            return ((uintptr_t)p - pages_begin_) / PageSize;
+        }
+
+        Page* get_page_at_index(uintptr_t index) {
+            assert(index <= PageCount);
+            return (Page*)(pages_begin_ + index * PageSize);
         }
     };
 
@@ -182,7 +224,7 @@ namespace containers {
         }
     };
 
-    template< typename T, std::size_t N = 1<<30, std::size_t PageSize = 4096 > struct vbr_allocator {
+    template< typename T, std::size_t N = 1ull<<32, std::size_t PageSize = 4096 > struct vbr_allocator {
         static constexpr std::size_t PageElementCount =
             (PageSize -
                 sizeof(uint8_t) -
@@ -267,7 +309,7 @@ namespace containers {
 
         static_assert(sizeof(page) <= PageSize);
 
-        vbr_page_allocator< page, N / PageElementCount, PageSize > page_allocator_;
+        vbr_page_allocator< page, (N + PageElementCount) / PageElementCount, PageSize > page_allocator_;
 
         page* page_ = nullptr;
 
@@ -310,7 +352,7 @@ namespace containers {
         }
 
         uint64_t get_version(T* ptr) {
-            return ((page*)detail::mask(ptr, PageSize))->state() & ~0xFF;
+            return get_page(ptr)->state() & ~0xFF;
         }
 
         void deallocate(T* ptr) {
