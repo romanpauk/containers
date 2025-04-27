@@ -14,6 +14,8 @@ include(cmake/sanitizers.cmake)
 
 sanitizers_init(CONTAINERS)
 
+add_compile_options(-march=native -save-temps=obj -g)
+
 # TODO: g++ -Wall -Wextra -Wpedantic -Q --help=warning | grep disabled
 set(CONTAINERS_WARNINGS_GCC
     -Wall
@@ -83,6 +85,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         benchmark/evictable_unordered_map.cpp
         benchmark/growable_array.cpp
         benchmark/main.cpp
+        benchmark/queue.cpp
         benchmark/small_ptr_arena_allocator.cpp
         benchmark/thread_arena_allocator.cpp
     )

@@ -21,6 +21,9 @@
 
 #define VBR_PAGE_ALLOCATOR_ATOMIC
 
+#define __likely__(cond) __builtin_expect((cond), true)
+#define __unlikely__(cond) __builtin_expect((cond), false)
+
 namespace containers {
     namespace detail {
         inline void* align(void* ptr, std::size_t alignment) {
@@ -270,7 +273,7 @@ namespace containers {
             void deallocate(T* ptr) {
                 assert(ptr >= values_ && ptr < values_ + PageElementCount);
                 deallocations_.set(ptr - values_);
-                deallocations_size_.fetch_add(1, std::memory_order_release);
+                deallocations_size_.fetch_add(1, std::memory_order_relaxed);
             }
 
             uint8_t deallocations_size() const {
@@ -281,11 +284,11 @@ namespace containers {
             uint64_t version() const { return state() & ~0xFF; }
 
             bool update_state(uint64_t& state, PageState value) {
-                return state_.compare_exchange_strong(state, (state & ~0xFF) | (int)value);
+                return state_.compare_exchange_strong(state, (state & ~0xFF) | (int)value, std::memory_order_relaxed);
             }
 
             bool update_state_version(uint64_t& state, uint64_t value) {
-                return state_.compare_exchange_strong(state, value);
+                return state_.compare_exchange_strong(state, value, std::memory_order_relaxed);
             }
 
             bool refresh_allocations() {
@@ -297,6 +300,7 @@ namespace containers {
                     auto offset = sizeof(word) * 8 * i;
                     for (std::size_t j = 0; j < sizeof(word) * 8; ++j) {
                         if (word & (1ull << j)) {
+                            assert(allocations_size_ < PageElementCount);
                             allocations_[allocations_size_++] = offset + j;
                             deallocations += 1;
                         }
@@ -319,7 +323,7 @@ namespace containers {
 
         T* allocate_impl() {
             // unlikely
-            if (page_->allocations_size() == 1) {
+            if (__unlikely__(page_->allocations_size() == 1)) {
 
                 // TODO: handle special case here when the page_ is dummy,
                 // so we don't need to allocate in constructor.
