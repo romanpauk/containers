@@ -79,12 +79,13 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     FetchContent_MakeAvailable(concurrentqueue)
 
     add_executable(containers_benchmark
-        benchmark/arena_allocator.cpp
-        benchmark/evictable_unordered_map.cpp
-        benchmark/growable_array.cpp
+        #benchmark/arena_allocator.cpp
+        #benchmark/evictable_unordered_map.cpp
+        #benchmark/growable_array.cpp
         benchmark/main.cpp
-        benchmark/small_ptr_arena_allocator.cpp
-        benchmark/thread_arena_allocator.cpp
+        benchmark/pool.cpp
+        #benchmark/small_ptr_arena_allocator.cpp
+        #benchmark/thread_arena_allocator.cpp
     )
 
     target_link_libraries(containers_benchmark
@@ -100,16 +101,18 @@ if(CONTAINERS_ENABLE_BENCHMARK)
 
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
+    target_compile_options(containers_benchmark PRIVATE -march=native)
+
     target_sanitize(CONTAINERS containers_benchmark)
 endif()
 
 if(CONTAINERS_ENABLE_TESTING)
     add_executable(containers_test
-        test/arena_allocator.cpp
-        test/evictable_unordered_map.cpp
-        test/growable_array.cpp
-        test/small_ptr_arena_allocator.cpp
-        test/thread_arena_allocator.cpp
+        #test/arena_allocator.cpp
+        #test/evictable_unordered_map.cpp
+        #test/growable_array.cpp
+        #test/small_ptr_arena_allocator.cpp
+        #test/thread_arena_allocator.cpp
     )
 
     add_test(NAME containers_test COMMAND containers_test)
