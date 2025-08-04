@@ -8,6 +8,9 @@
 #include <cassert>
 #include <cstdint>
 
+#include <algorithm>
+#include <functional>
+
 #include <immintrin.h>
 #include <sys/mman.h>
 
@@ -15,8 +18,60 @@
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
 namespace containers {
-    struct bitmap {
-        bitmap() {}
+    template< std::size_t N, typename T = uint64_t > struct bitmap {
+        static_assert((N & (N - 1)) == 0);
+
+        bitmap() = default;
+
+        bitmap(uint64_t value): values_{value}  {}
+
+        void set(uint64_t v) {
+            for(auto& value: values_)
+                value = v;
+        }
+
+        void set_bit(std::size_t i) {
+            values_[i/sizeof(T)/8] |= (T{1} << (i & (sizeof(T) * 8 - 1)));
+        }
+
+        const std::array<T, N / sizeof(T) >& get() const { return values_; }
+
+        bool get_bit(std::size_t i) const {
+            return values_[i/sizeof(T)/8] & (T{1} << (i & (sizeof(T) * 8 - 1)));
+        }
+
+        void clear_bit(uint64_t i) {
+            values_[i/sizeof(T)/8] &= ~(T{1} << (i & (sizeof(T) * 8 - 1)));
+        }
+
+        uint64_t popcnt() const {
+            uint64_t cnt = 0;
+            for (auto value: values_) {
+                cnt += _mm_popcnt_u64(value);
+            }
+            return cnt;
+        }
+
+        uint64_t tzcnt() const {
+            uint64_t cnt = 0;
+            for(std::size_t i = 0; i < values_.size(); ++i) {
+                auto tmp = _tzcnt_u64(values_[i]);
+                cnt += tmp;
+                if (tmp < sizeof(T) * 8)
+                    break;
+            }
+
+            return cnt;
+        }
+
+        static constexpr std::size_t size() { return N; }
+
+    private:
+        std::array<T, N / sizeof(T)> values_;
+    };
+
+    template<> struct bitmap<64, uint64_t> {
+        bitmap() = default;
 
         bitmap(uint64_t value): value_(value) {}
 
@@ -49,10 +104,30 @@ namespace containers {
             return _tzcnt_u64(value_);
         }
 
-        static constexpr std::size_t size() { return sizeof(value_) * 8; }
+        static constexpr std::size_t size() { return 64; }
 
     private:
         uint64_t value_;
+    };
+
+    template<typename T> struct heap {
+        void push(T value) {
+            assert(value != 0);
+            values_.push_back(value);
+            std::push_heap(values_.begin(), values_.end(), std::greater<T>());
+        }
+
+        T pop() {
+            if (values_.empty())
+                return T();
+            std::pop_heap(values_.begin(), values_.end(), std::greater<T>());
+            T value = values_.back();
+            values_.pop_back();
+            return value;
+        }
+
+    private:
+        std::vector<T> values_;
     };
 
     template<std::size_t Size, std::size_t Count> struct page_manager {
@@ -70,7 +145,11 @@ namespace containers {
         }
 
         void* allocate() {
-            // TODO: check deallocated pages
+            auto index = deallocated_pages_.tzcnt();
+            if (index < deallocated_pages_.size()) {
+                deallocated_pages_.clear_bit(index);
+                return get_page(index);
+            }
 
             uint64_t ptr = mmap_current_;
             mmap_current_ += PageSize;
@@ -81,18 +160,22 @@ namespace containers {
         }
 
         void deallocate(void* ptr) {
-            // TODO: store into deallocated list
+            deallocated_pages_.set_bit(get_page_index(ptr));
         }
 
         uint64_t get_page_index(void* ptr) {
             return ((uint64_t)ptr - mmap_base_) / PageSize;
         }
 
+        void* get_page(uint64_t index) {
+            return (void*)(mmap_base_ + PageSize * index);
+        }
+
     private:
         uint64_t mmap_base_;
         uint64_t mmap_current_;
 
-        // Bitmap of deallocated pages
+        bitmap<PageCount> deallocated_pages_;
     };
 
     template<typename T, typename PageManager> struct pool_page_allocator {
@@ -105,9 +188,16 @@ namespace containers {
         {}
 
         void* allocate() {
+            // TODO:
             // Scan for non-full pages first
             // The goal is to allocate from lowest address always.
             // Non-full page might also be completely empty to be returned to OS.
+            auto index = non_full_pages_.tzcnt();
+            if (index < non_full_pages_.size()) {
+                non_full_pages_.clear_bit(index);
+                return page_manager_.get_page(index);
+            }
+
             return page_manager_.allocate();
         }
 
@@ -115,11 +205,15 @@ namespace containers {
 
         }
 
+        void mark_non_full(void* ptr) {
+            non_full_pages_.set_bit(page_manager_.get_page_index(ptr));
+        }
+
     private:
         PageManager& page_manager_;
 
-        // Bitmap of available pages
         // TODO: need to have a range of pages to scan...
+        bitmap<PageManager::PageCount> non_full_pages_;
     };
 
     template< typename T, typename Allocator > struct pool_allocator {
@@ -131,11 +225,11 @@ namespace containers {
                 : allocations(init) {}
 
             uint8_t memory[sizeof(T) * N];
-            bitmap allocations;
+            bitmap<64> allocations;
         };
 
         static_assert(sizeof(page) <= Allocator::PageSize);
-        static_assert(bitmap::size() <= N);
+        static_assert(bitmap<64>::size() <= N);
 
         pool_allocator(Allocator& allocator)
             : pool_page_allocator_(allocator) {}
@@ -153,6 +247,7 @@ namespace containers {
 
             if (page_ != &dummy_page_) {
                 // TODO: page is full until deallocate call
+                // Do we need this code?
                 // pool_page_allocator_.mark_full(page_);
             }
 
@@ -165,13 +260,12 @@ namespace containers {
 goto again;
         }
 
-        // deallocate has no branch in the fast-path
         void deallocate(T* ptr) {
             page* p = get_page(ptr);
             assert(p->allocations.get_bit(get_element_index(ptr)) == 0);
             p->allocations.set_bit(get_element_index(ptr));
 
-        #if 1
+        #if 0
             // Here we should handle two cases for page_ != p:
             //  1) N - page should be deallocated
             //  2) 1 - page should be set ready for allocation again
@@ -179,6 +273,8 @@ goto again;
             if (__unlikely__(p != page_)) {
                 if (p->allocations.get() == -1) {
                     pool_page_allocator_.deallocate(p);
+                } else if (p->allocations.get() == 1) {
+                    pool_page_allocator_.mark_non_full(p);
                 }
             }
         #else
@@ -191,9 +287,11 @@ goto again;
             //      we need to quickly scan this list to find empty/partially full pages.
             //
 
-            // TODO: need to mark the page as allocatable.
-            // pool_page_allocator_.mark_non_full(p);
-            return;
+            // TODO: this branch is slow...
+            // Especially for parallel deallocation this will need some work.
+            if (__unlikely__(p->allocations.get() > 0)) {
+                pool_page_allocator_.mark_non_full(p);
+            }
         #endif
         }
 
