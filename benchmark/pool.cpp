@@ -10,15 +10,19 @@
 #include <benchmark/benchmark.h>
 
 static void pool_allocator_allocate(benchmark::State& state) {
-    containers::page_allocator<1<<12, 100> page_allocator;
-    containers::pool_allocator<uint64_t, decltype(page_allocator) > allocator(page_allocator);
+    containers::page_manager<1<<12, 65536> page_manager;
+    containers::pool_page_allocator<uint64_t, decltype(page_manager)> page_allocator(page_manager);
+    containers::pool_allocator<uint64_t, decltype(page_allocator)> allocator(page_allocator);
 
-    volatile uint64_t val = 0;
+    std::vector<uint64_t*> ptrs(state.range());
+
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
-            volatile uint64_t* ptr = allocator.allocate(1);
-            val += (uint64_t)ptr;
-            allocator.deallocate((uint64_t*)ptr);
+            ptrs[i] = allocator.allocate(1);
+        }
+
+        for (int i = 0; i < state.range(); ++i) {
+            allocator.deallocate(ptrs[i]);
         }
     }
 
@@ -28,12 +32,14 @@ static void pool_allocator_allocate(benchmark::State& state) {
 static void allocator_allocate(benchmark::State& state) {
     std::allocator<uint64_t> allocator;
 
-    volatile uint64_t val = 0;
+    std::vector<uint64_t*> ptrs(state.range());
+
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
-            volatile uint64_t* ptr = allocator.allocate(1);
-            val += (uint64_t)ptr;
-            allocator.deallocate((uint64_t*)ptr, sizeof(uint64_t));
+            ptrs[i] = allocator.allocate(1);
+        }
+        for (int i = 0; i < state.range(); ++i) {
+            allocator.deallocate(ptrs[i], sizeof(uint64_t));
         }
     }
 
