@@ -67,7 +67,7 @@ namespace containers {
         static constexpr std::size_t size() { return N; }
 
     private:
-        std::array<T, N / sizeof(T)> values_;
+        std::array<T, N / sizeof(T)> values_ = {0};
     };
 
     template<> struct bitmap<64, uint64_t> {
@@ -145,29 +145,35 @@ namespace containers {
         }
 
         void* allocate() {
+            void* ptr = nullptr;
             auto index = deallocated_pages_.tzcnt();
             if (index < deallocated_pages_.size()) {
                 deallocated_pages_.clear_bit(index);
-                return get_page(index);
+                ptr = get_page(index);
+            } else {
+                ptr = (void*)mmap_current_;
+                mmap_current_ += PageSize;
+                if (mmap_current_ > mmap_base_ + PageSize * PageCount)
+                    return nullptr;
             }
 
-            uint64_t ptr = mmap_current_;
-            mmap_current_ += PageSize;
-            if (mmap_current_ > mmap_base_ + PageSize * PageCount)
-                return nullptr;
-
+            assert(deallocated_pages_.get_bit(get_page_index(ptr)) == 0);
             return (void*)ptr;
         }
 
         void deallocate(void* ptr) {
+            assert(deallocated_pages_.get_bit(get_page_index(ptr)) == 0);
             deallocated_pages_.set_bit(get_page_index(ptr));
         }
 
         uint64_t get_page_index(void* ptr) {
-            return ((uint64_t)ptr - mmap_base_) / PageSize;
+            auto index = ((uint64_t)ptr - mmap_base_) / PageSize;
+            assert(index < PageCount);
+            return index;
         }
 
         void* get_page(uint64_t index) {
+            assert(index < PageCount);
             return (void*)(mmap_base_ + PageSize * index);
         }
 
@@ -180,7 +186,6 @@ namespace containers {
 
     template<typename T, typename PageManager> struct pool_page_allocator {
         static constexpr std::size_t PageSize = PageManager::PageSize;
-        static_assert((PageSize & (PageSize - 1)) == 0);
         static constexpr std::size_t PageCount = PageManager::PageCount;
 
         pool_page_allocator(PageManager& page_manager)
@@ -234,6 +239,10 @@ namespace containers {
         pool_allocator(Allocator& allocator)
             : pool_page_allocator_(allocator) {}
 
+        ~pool_allocator() {
+            page_ = &dummy_page_;
+        }
+
         // allocate has one predictable branch in the fast-path
         T* allocate(std::size_t n) {
             assert(n == 1);
@@ -251,7 +260,9 @@ namespace containers {
                 // pool_page_allocator_.mark_full(page_);
             }
 
+            page* p = page_;
             page_ = (page*)pool_page_allocator_.allocate();
+            assert(page_ != p);
             if (!page_) {
                 std::abort();
                 return nullptr;
@@ -289,7 +300,7 @@ goto again;
 
             // TODO: this branch is slow...
             // Especially for parallel deallocation this will need some work.
-            if (__unlikely__(p->allocations.get() > 0)) {
+            if (__unlikely__(p != page_)) {
                 pool_page_allocator_.mark_non_full(p);
             }
         #endif

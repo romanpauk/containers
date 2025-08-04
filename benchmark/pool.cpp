@@ -9,6 +9,8 @@
 
 #include <benchmark/benchmark.h>
 
+const int N = 1<<21;
+
 static void pool_allocator_allocate(benchmark::State& state) {
     containers::page_manager<1<<12, 65536> page_manager;
     containers::pool_page_allocator<uint64_t, decltype(page_manager)> page_allocator(page_manager);
@@ -47,6 +49,6 @@ static void allocator_allocate(benchmark::State& state) {
 }
 
 
-BENCHMARK(pool_allocator_allocate)->Range(1, 1<<12);
-BENCHMARK(allocator_allocate)->Range(1, 1<<12);
+BENCHMARK(pool_allocator_allocate)->Range(1, N);
+BENCHMARK(allocator_allocate)->Range(1, N);
 
