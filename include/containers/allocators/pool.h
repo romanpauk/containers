@@ -55,7 +55,7 @@ namespace containers {
         uint64_t tzcnt() const {
             uint64_t cnt = 0;
             for(std::size_t i = 0; i < values_.size(); ++i) {
-                auto tmp = _tzcnt_u64(values_[i]);
+                auto tmp = _tzcnt_u64(~values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
                     break;
@@ -101,7 +101,7 @@ namespace containers {
         }
 
         uint64_t tzcnt() const {
-            return _tzcnt_u64(value_);
+            return _tzcnt_u64(~value_);
         }
 
         static constexpr std::size_t size() { return 64; }
@@ -165,95 +165,208 @@ namespace containers {
         std::size_t size_;
     };
 
-    template< std::size_t Size > struct PageSizeClass {
-        static_assert((Size & (Size - 1)) == 0);
-        static_assert(Size <= 65536 && Size >= 1024);
-        static constexpr std::size_t Index = Size >> 11;
+    template<std::size_t N> struct PageChunkSize {
+        static_assert((N & (N - 1)) == 0);
+        static_assert(N >= 1024 && N <= 65536);
+        static constexpr std::size_t index = N >> 11;
+        static constexpr std::size_t size = 65536 / N;
     };
 
-    template< std::size_t Size > struct PageManager {
-        static constexpr std::size_t PageSize = 1 << 22;
-        static constexpr std::size_t PageCount = Size / PageSize;
-        static constexpr std::size_t ChunkSize = PageSize / 64;
+    template<typename T> struct PoolAllocatorState {
+        using ChunkSize = PageChunkSize<1024>;
 
-        struct PageMetadata {
-            bitmap<64> pagebits; // TODO: needed?
-            std::array<bitmap<64>, 7> sizebits;
-            std::array<bitmap<64>, 64> chunkbits;
-        };
+        uintptr_t chunk;
+        bitmap<64>* bitmap;
+    };
+
+    //
+    // PageGroup, 4Mb
+    //      group of 64 Pages
+    //      managed by PageGroupManager
+    // Page, 64k
+    //      group of PageChunks
+    // PageChunk, 1kb - 64kb based on PageChunkSize
+    //      group of PageChunks
+    //
+    //
+    // pool_allocator<T> will allocate T's from chunks allocated from
+    //  its own page (as each page can contain only one size of chunks).
+    //
+
+    struct PageGroupDescriptor {
+        bitmap<64> page_bitmap;
+        std::array<bitmap<64>, 7> page_size_bitmaps;
+        std::array<bitmap<64>, 64> page_chunk_bitmaps;
+        std::array<std::array<bitmap<64>, 64>, 64> page_chunk_element_bitmaps;
+    };
+
+    template<std::size_t Size> struct PageGroupManager {
+        static constexpr std::size_t PageGroupSize = 1 << 22;
+        static constexpr std::size_t PageGroupCount = Size / PageGroupSize;
+        static constexpr std::size_t PageSize = PageGroupSize / 64;
+        static constexpr std::size_t PageCount = PageGroupCount * 64;
 
         void *memory_;
         std::size_t memory_size_;
 
-        using MetaSpace = std::array< PageMetadata, PageCount >;
-        MetaSpace* meta_space_;
+        using PageGroupDescriptors = std::array<PageGroupDescriptor, PageGroupCount>;
+        PageGroupDescriptors* page_group_descriptors_;
 
-        using PageLiveset = std::array<bitmap<PageCount>, 7>;
-        PageLiveset* page_liveset_;
+        using PageGroupLiveset = bitmap<PageGroupCount>;
+        PageGroupLiveset* page_group_liveset_;
 
-        using PageDeadset = bitmap<PageCount>;
-        PageDeadset* page_deadset_;
+        using PageGroupDeadset = bitmap<PageGroupCount>;
+        PageGroupDeadset* page_group_deadset_;
 
-        using PageCache = std::array< void*, 7 >;
-        PageCache* page_cache_;
+        using PageGroups = std::array<std::array<std::array<uint8_t, PageSize>, 64>, PageGroupCount>;
+        PageGroups* page_groups_;
+        std::size_t page_groups_index_ = 0;
 
-        using PageSpace = std::array< std::array< std::array<uint8_t, ChunkSize>, 64>, PageCount >;
-        PageSpace* page_space_;
-
-        PageManager() {
+        PageGroupManager() {
             memory_buffer_builder builder;
-            builder.add<MetaSpace>();
-            builder.add<PageLiveset>();
-            builder.add<PageDeadset>();
-            builder.add<PageCache>();
-            builder.add<PageSpace, PageSize>();
+            builder.add<PageGroupDescriptors>();
+            builder.add<PageGroupLiveset>();
+            builder.add<PageGroupDeadset>();
+            builder.add<PageGroups, PageGroupSize>();
 
             memory_size_ = builder.size();
             memory_ = mmap(0, memory_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, memory_size_);
-            meta_space_ = allocator.allocate<MetaSpace>();
-            page_liveset_ = allocator.allocate<PageLiveset>();
-            page_deadset_ = allocator.allocate<PageDeadset>();
-            page_cache_ = allocator.allocate<PageCache>();
-            page_space_ = allocator.allocate<PageSpace, PageSize>();
+            page_group_descriptors_ = allocator.allocate<PageGroupDescriptors>();
+            page_group_liveset_ = allocator.allocate<PageGroupLiveset>();
+            page_group_deadset_ = allocator.allocate<PageGroupDeadset>();
+            page_groups_ = allocator.allocate<PageGroups, PageGroupSize>();
         }
 
-        ~PageManager() {
+        ~PageGroupManager() {
             munmap(memory_, memory_size_);
         }
 
-        template< typename SizeClass > void* allocate() {
+        // Single-threaded
+        template<typename T> T* allocate(PoolAllocatorState<T>& state) {
+            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+
         again:
-            auto page = get_live_page<SizeClass>();
-            if (__unlikely__(page == -1))
+            auto index = state.bitmap.tzcnt();
+            if (__likely__(index < state.bitmap.size())) {
+                state.bitmap.set_bit(index);
+                return (T*)(state.chunk + sizeof(T) * index);
+            } else {
+                if (allocate_update_chunk(state))
+                    goto again;
+
+                if (allocate_update_page(state))
+                    goto again;
+
                 std::abort();
-            auto chunk = allocate_chunk<SizeClass>(page);
-            if (__unlikely__(chunk == -1)) {
-                goto again;
+                return nullptr;
             }
-            return get_address(page, chunk);
         }
 
-        template< typename SizeClass > void get_live_page() {
-            auto& page = (*page_cache_)[SizeClass::Index];
-            if (__unlikely__(page == -1)) {
-                //
-                // TODO: check live-set
-                //
-                // Live-set unusable, allocate fresh page
-                page = allocate_page();
+        template<typename T> bool allocate_update_chunk(PoolAllocatorState<T>& state) {
+            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+
+            uintptr_t dist = (state.chunk - (uintptr_t)page_groups_);
+            auto group = dist/PageGroupSize;
+            auto page = dist/PageSize & 63;
+
+            // TODO: scan existing PageChunks for non-full ones
+            auto& descriptor = (*page_group_descriptors_)[group];
+            auto& chunk_bitmap = descriptor.page_chunk_bitmaps[page];
+            auto chunk = chunk_bitmap.tzcnt();
+            if (__likely__(chunk < chunk_bitmap.size())) {
+                chunk_bitmap.set_bit(chunk);
+                state.bitmap = &chunk_bitmap;
+                state.chunk = (uintptr_t)&(*page_groups_)[group][page] + chunk * ChunkSize::value;
+                state.chunk = 0;
+                return true;
+            } else {
+                return false;
             }
+        }
+
+        // Multi-threaded
+        // TODO: handle races, need a while()
+        template<typename T> bool allocate_update_page(PoolAllocatorState<T>& state) {
+            auto& liveset = *page_group_liveset_;
+        again:
+            auto group = liveset.tzcnt();
+            if (group < liveset.size()) {
+                auto& descriptor = &(*page_group_descriptors_)[group];
+                auto page = allocate_page(descriptor);
+                if (page != descriptor.page_bitmap.size()) {
+                    state.group = group;
+                    state.page = page;
+                    return allocate_page_chunk(state);
+                } else {
+                    liveset.clear_bit(group);
+                    goto again;
+                }
+            }
+
+            if (page_groups_index_ < PageGroupCount) {
+                state.group = page_groups_index_++;
+                auto& descriptor = &(*page_group_descriptors_)[state.group];
+                auto page = allocate_page(descriptor);
+                if (page != descriptor.page_bitmap.size()) {
+                    state.page = page;
+                    return allocate_page_chunk(state);
+                }
+            } else {
+                std::abort();
+            }
+        }
+
+        bool allocate_page(PageGroupDescriptor& descriptor) {
+            auto page = descriptor.page_bitmap.tzcnt();
+            if (page < descriptor.page_bitmap.size()) {
+                descriptor.page_bitmap.set_bit(page);
+                return true;
+            }
+            return false;
+        }
+
+        template<typename T> void deallocate(PoolAllocatorState<T>& state, T* ptr) {
+            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+
+            uintptr_t dist = ((uintptr_t)ptr - (uintptr_t)page_groups_);
+            auto group = dist/PageGroupSize;
+            auto page = dist/PageSize & 63;
+            auto chunk = dist/ChunkSize::size & ((PageSize/ChunkSize::size)-1);
+
+            auto& descriptor = (*page_groups_desriptors_)[group];
+            descriptor.page_chunk_element_bitmaps[page][chunk].set_bit(/*ptr to chunk element*/);
+
+            // Get descriptor
+            // Get chunk bitmap
+            // Deallocates element from chunk bitmap
+            // If empty,
+            //  Deallocates chunk from page
+            //  If empty,
+            //   Deallocates page from group (places group on live set)
+        }
+
+#if 0
+        template< typename ChunkSize > std::size_t allocate_page() {
+            auto& liveset = (*page_group_liveset_)[ChunkSize::index].chunk_size_bitmaps[ChunkSize::index];
+            auto page = liveset.tzcnt();
+            if (page < liveset.size()) {
+                return page;
+            } else {
+                page = page_deadset_->tzcnt();
+                if (page == page_deadset_->size()) {
+                    page = page_space_index_++;
+                }
+            }
+
+            assert(page < PageCount);
             return page;
-        }
-
-        std::size_t allocate_page() {
-            // check dead-set
-            // if empty, allocate new page
         }
 
         template< typename SizeClass > std::size_t allocate_chunk(std::size_t page) {
             auto& metadata = (*meta_space_)[page];
+            return metadata.pagebits.tzcnt();
         }
 
         void* get_address(std::size_t page_index, std::size_t chunk_index) {
@@ -289,7 +402,27 @@ namespace containers {
             //
             // If page is not cached and it is empty, deallocate it
             //  (write to deadset)
+      }
+#endif
+    };
+
+    template<typename T, typename PageGroupManagerT> struct PoolAllocator {
+        PoolAllocator(PageGroupManagerT& manager)
+            : manager_(manager)
+        {
+            manager_.init_pool_allocator_state(state_);
         }
+
+        T* allocate() {
+            return manager_.allocate(state_);
+        }
+
+        void deallocate(T* ptr) {
+            manager_.deallocate(state_, ptr);
+        }
+
+        PageGroupManagerT& manager_;
+        PoolAllocatorState<T> state_;
     };
 
     template<std::size_t Size, std::size_t Count> struct page_manager {
