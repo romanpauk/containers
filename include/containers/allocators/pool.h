@@ -175,8 +175,11 @@ namespace containers {
     template<typename T> struct PoolAllocatorState {
         using ChunkSize = PageChunkSize<1024>;
 
-        uintptr_t chunk;
-        bitmap<64>* bitmap;
+        uintptr_t chunk_ptr;
+        bitmap<64>* page_chunk_elements_bitmap;
+
+        // uint64_t page
+        // bitmap<64>* page_chunk_bitmap
     };
 
     //
@@ -195,6 +198,11 @@ namespace containers {
 
     struct PageGroupDescriptor {
         bitmap<64> page_bitmap;
+
+        //
+        // TODO: will need some page state:
+        //  thread id, live/dead etc.
+        //
         std::array<bitmap<64>, 7> page_size_bitmaps;
         std::array<bitmap<64>, 64> page_chunk_bitmaps;
         std::array<std::array<bitmap<64>, 64>, 64> page_chunk_element_bitmaps;
@@ -248,10 +256,11 @@ namespace containers {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
 
         again:
-            auto index = state.bitmap.tzcnt();
-            if (__likely__(index < state.bitmap.size())) {
-                state.bitmap.set_bit(index);
-                return (T*)(state.chunk + sizeof(T) * index);
+            auto* bitmap = state.page_chunk_elements_bitmap;
+            auto index = bitmap->tzcnt();
+            if (__likely__(index < bitmap->size())) {
+                bitmap->set_bit(index);
+                return (T*)(state.chunk_ptr + sizeof(T) * index);
             } else {
                 if (allocate_update_chunk(state))
                     goto again;
@@ -267,7 +276,7 @@ namespace containers {
         template<typename T> bool allocate_update_chunk(PoolAllocatorState<T>& state) {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
 
-            uintptr_t dist = (state.chunk - (uintptr_t)page_groups_);
+            uintptr_t dist = (state.chunk_ptr - (uintptr_t)page_groups_);
             auto group = dist/PageGroupSize;
             auto page = dist/PageSize & 63;
 
@@ -277,9 +286,7 @@ namespace containers {
             auto chunk = chunk_bitmap.tzcnt();
             if (__likely__(chunk < chunk_bitmap.size())) {
                 chunk_bitmap.set_bit(chunk);
-                state.bitmap = &chunk_bitmap;
-                state.chunk = (uintptr_t)&(*page_groups_)[group][page] + chunk * ChunkSize::value;
-                state.chunk = 0;
+                setup_allocator_state(state, group, page, chunk);
                 return true;
             } else {
                 return false;
@@ -289,42 +296,55 @@ namespace containers {
         // Multi-threaded
         // TODO: handle races, need a while()
         template<typename T> bool allocate_update_page(PoolAllocatorState<T>& state) {
+            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+
             auto& liveset = *page_group_liveset_;
         again:
             auto group = liveset.tzcnt();
             if (group < liveset.size()) {
                 auto& descriptor = &(*page_group_descriptors_)[group];
-                auto page = allocate_page(descriptor);
-                if (page != descriptor.page_bitmap.size()) {
-                    state.group = group;
-                    state.page = page;
-                    return allocate_page_chunk(state);
-                } else {
-                    liveset.clear_bit(group);
-                    goto again;
+                auto& page_size_bitmap = descriptor->page_size_bitmaps[ChunkSize::index];
+
+                auto page_value = page_size_bitmap.get();
+                for (std::size_t page = 0; page < 64; ++page) {
+                    // TODO: page is per-thread
+                    if ((page_value >> page) & 1) {
+                        auto chunk_value = descriptor->page_chunk_bitmaps[page].get();
+                        for (std::size_t chunk = 0; chunk < 64; ++chunk) {
+                            if ((chunk_value >> chunk) & 1) {
+
+                                if (descriptor->page_chunk_elements_bitmaps[page][chunk].get() != -1) {
+                                    setup_allocator_state(state, group, page, chunk);
+                                    return true;
+                                }
+                            } else {
+                                descriptor->page_chunk_bitmaps[page].set_bit(chunk);
+                                setup_allocator_state(state, group, page, chunk);
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
 
             if (page_groups_index_ < PageGroupCount) {
-                state.group = page_groups_index_++;
+                auto group = page_groups_index_++;
                 auto& descriptor = &(*page_group_descriptors_)[state.group];
-                auto page = allocate_page(descriptor);
-                if (page != descriptor.page_bitmap.size()) {
-                    state.page = page;
-                    return allocate_page_chunk(state);
-                }
+                descriptor.page_bitmap.set_bit(1);
+                descriptor.page_size_bitmaps[ChunkSize::index].set_bit(1);
+                descriptor.page_chunk_element_bitmaps[1][1].set_bit(1);
+                setup_allocator_state(state, group, 1, 1);
+                return true;
             } else {
                 std::abort();
             }
         }
 
-        bool allocate_page(PageGroupDescriptor& descriptor) {
-            auto page = descriptor.page_bitmap.tzcnt();
-            if (page < descriptor.page_bitmap.size()) {
-                descriptor.page_bitmap.set_bit(page);
-                return true;
-            }
-            return false;
+        template<typename T> void setup_allocator_state(PoolAllocatorState<T>& state, uint64_t group, uint64_t page, uint64_t chunk) {
+            using ChunkSize = PoolAllocatorState<T>::ChunkSize;
+            auto& descriptor = (*page_group_descriptors_)[group];
+            state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * ChunkSize::value;
+            state.page_chunk_elements_bitmap = &descriptor->page_chunk_elements_bitmaps[page][chunk];
         }
 
         template<typename T> void deallocate(PoolAllocatorState<T>& state, T* ptr) {
