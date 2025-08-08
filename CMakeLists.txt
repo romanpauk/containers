@@ -83,7 +83,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
         #benchmark/evictable_unordered_map.cpp
         #benchmark/growable_array.cpp
         benchmark/main.cpp
-        benchmark/pool.cpp
+        #benchmark/pool.cpp
         #benchmark/small_ptr_arena_allocator.cpp
         #benchmark/thread_arena_allocator.cpp
     )
@@ -111,6 +111,7 @@ if(CONTAINERS_ENABLE_TESTING)
         #test/arena_allocator.cpp
         #test/evictable_unordered_map.cpp
         #test/growable_array.cpp
+        test/pool.cpp
         #test/small_ptr_arena_allocator.cpp
         #test/thread_arena_allocator.cpp
     )
@@ -128,6 +129,7 @@ if(CONTAINERS_ENABLE_TESTING)
 
     target_compile_options(containers_test PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
     target_compile_options(containers_test PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
+    target_compile_options(containers_test PRIVATE -march=native)
 
     target_sanitize(CONTAINERS containers_test)
 endif()
