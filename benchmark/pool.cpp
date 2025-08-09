@@ -12,9 +12,8 @@
 const int N = 1<<21;
 
 static void pool_allocator_allocate(benchmark::State& state) {
-    containers::page_manager<1<<12, 65536> page_manager;
-    containers::pool_page_allocator<uint64_t, decltype(page_manager)> page_allocator(page_manager);
-    containers::pool_allocator<uint64_t, decltype(page_allocator)> allocator(page_allocator);
+    containers::PageGroupManager< 1ull<<32 > manager;
+    containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
 
@@ -23,9 +22,11 @@ static void pool_allocator_allocate(benchmark::State& state) {
             ptrs[i] = allocator.allocate(1);
         }
 
+        //state.PauseTiming();
         for (int i = 0; i < state.range(); ++i) {
-            allocator.deallocate(ptrs[i]);
+            allocator.deallocate(ptrs[i], 1);
         }
+        //state.ResumeTiming();
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());

@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
@@ -56,6 +57,18 @@ namespace containers {
         uint64_t tzcnt() const {
             uint64_t cnt = 0;
             for(std::size_t i = 0; i < values_.size(); ++i) {
+                auto tmp = _tzcnt_u64(values_[i]);
+                cnt += tmp;
+                if (tmp < sizeof(T) * 8)
+                    break;
+            }
+
+            return cnt;
+        }
+
+        uint64_t ffz() const {
+            uint64_t cnt = 0;
+            for(std::size_t i = 0; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
@@ -102,13 +115,17 @@ namespace containers {
         }
 
         uint64_t tzcnt() const {
+            return _tzcnt_u64(value_);
+        }
+
+        uint64_t ffz() const {
             return _tzcnt_u64(~value_);
         }
 
         static constexpr std::size_t size() { return 64; }
 
     private:
-        uint64_t value_;
+        uint64_t value_ = 0;
     };
 
     template<typename T> struct heap {
@@ -179,6 +196,7 @@ namespace containers {
         uintptr_t chunk_ptr;
         bitmap<64>* page_chunk_element_bitmap;
 
+        uint64_t group;
         uint64_t page;
         uint64_t chunk;
 
@@ -255,6 +273,9 @@ namespace containers {
         }
 
         void allocate_page_zero() {
+            // TODO: retval
+            mprotect(&(*page_groups_)[0], PageGroupSize, PROT_READ);
+
             ++page_groups_index_;
             auto& descriptor = (*page_group_descriptors_)[0];
             memset(&descriptor, -1, sizeof(descriptor));
@@ -268,11 +289,14 @@ namespace containers {
         template<typename T> T* allocate(PoolAllocatorState<T>& state) {
         again:
             auto* bitmap = state.page_chunk_element_bitmap;
-            auto index = bitmap->tzcnt();
+            auto index = bitmap->ffz();
             if (__likely__(index < bitmap->size())) {
                 bitmap->set_bit(index);
+                T* p = (T*)(state.chunk_ptr + 16 * index);
+                //fprintf(stderr, "allocate() %p group %lu page %lu chunk %lu index %lu\n",
+                //        p, state.group, state.page, state.chunk, index);
                 // TODO: this hardcodes 16 bytes
-                return (T*)(state.chunk_ptr + 16 * index);
+                return p;
             } else {
                 if (allocate_update_chunk(state))
                     goto again;
@@ -293,7 +317,7 @@ namespace containers {
             // TODO: scan existing PageChunks for non-full ones
             auto& descriptor = (*page_group_descriptors_)[group];
             auto& chunk_bitmap = descriptor.page_chunk_bitmaps[page];
-            auto chunk = chunk_bitmap.tzcnt();
+            auto chunk = chunk_bitmap.ffz();
             if (__likely__(chunk < chunk_bitmap.size())) {
                 chunk_bitmap.set_bit(chunk);
                 setup_allocator_state(state, group, page, chunk);
@@ -340,10 +364,11 @@ namespace containers {
             if (page_groups_index_ < PageGroupCount) {
                 auto group = page_groups_index_++;
                 auto& descriptor = (*page_group_descriptors_)[group];
-                descriptor.page_bitmap.set_bit(1);
-                descriptor.page_size_bitmaps[ChunkSize::index].set_bit(1);
-                descriptor.page_chunk_element_bitmaps[1][1].set_bit(1);
-                setup_allocator_state(state, group, 1, 1);
+                descriptor.page_bitmap.set_bit(0);
+                descriptor.page_size_bitmaps[ChunkSize::index].set_bit(0);
+                descriptor.page_chunk_element_bitmaps[0][0].set_bit(0);
+                (*page_group_liveset_).set_bit(group);
+                setup_allocator_state(state, group, 0, 0);
                 return true;
             } else {
                 std::abort();
@@ -353,33 +378,39 @@ namespace containers {
         template<typename T> void setup_allocator_state(PoolAllocatorState<T>& state, uint64_t group, uint64_t page, uint64_t chunk) {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
             auto& descriptor = (*page_group_descriptors_)[group];
-            state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * ChunkSize::size;
+            state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * 1024;
             state.page_chunk_element_bitmap = &descriptor.page_chunk_element_bitmaps[page][chunk];
             state.page = page;
             state.chunk = chunk;
+            state.group = group;
         }
 
         template<typename T> void init_allocator_state(PoolAllocatorState<T>& state) {
             state.chunk = 0;
-            state.chunk_ptr = 0;
+            state.chunk_ptr = (uintptr_t)&(*page_groups_)[0][0];
             state.page = 0;
+            state.group = 0;
             state.page_chunk_element_bitmap = &(*page_group_descriptors_)[0].page_chunk_element_bitmaps[0][0];
         }
 
         template<typename T> void deallocate(PoolAllocatorState<T>& state, T* ptr) {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
 
-            uintptr_t dist = ((uintptr_t)ptr - (uintptr_t)page_groups_);
-            auto group = dist/PageGroupSize;
-            auto page = dist/PageSize & 63;
-            auto chunk = dist/ChunkSize::size & ((PageSize/ChunkSize::size)-1);
-            auto index = (uint64_t)ptr - (uint64_t)(*page_groups_)[group][page][chunk];
+            // TODO: this is stupid
+            uintptr_t address = (uintptr_t)ptr;
+            auto group = (address - (uintptr_t)page_groups_) / PageGroupSize;
+            auto page = (address - (uintptr_t)&(*page_groups_)[group]) / PageSize;
+            auto chunk = (address - (uintptr_t)&(*page_groups_)[group][page]) / 1024;
+            // TODO: hardcodes 16bytes
+            auto index = (address - ((uint64_t)&(*page_groups_)[group][page] + chunk * 1024)) / 16;
 
+            //fprintf(stderr, "deallocate() %p group %lu page %lu chunk %lu index %lu\n",
+            //        ptr, group, page, chunk, index);
             auto& descriptor = (*page_group_descriptors_)[group];
+            assert(descriptor.page_chunk_element_bitmaps[page][chunk].get_bit(index));
             descriptor.page_chunk_element_bitmaps[page][chunk].clear_bit(index);
             if (descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0) {
-                if (descriptor.page_chunk_bitmaps[page].clear_bit(chunk)) {
-                }
+                descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
             }
 
             // TODO:
