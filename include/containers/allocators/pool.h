@@ -19,6 +19,13 @@
 #define __likely__(cond) __builtin_expect((cond), true)
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
+//#define DEBUG
+#if defined(DEBUG)
+#define __debug__(...) { fprintf(stderr, __VA_ARGS__); }
+#else
+#define __debug__(...)
+#endif
+
 namespace containers {
     template< std::size_t N, typename T = uint64_t > struct bitmap {
         static_assert((N & (N - 1)) == 0);
@@ -293,8 +300,8 @@ namespace containers {
             if (__likely__(index < bitmap->size())) {
                 bitmap->set_bit(index);
                 T* p = (T*)(state.chunk_ptr + 16 * index);
-                //fprintf(stderr, "allocate() %p group %lu page %lu chunk %lu index %lu\n",
-                //        p, state.group, state.page, state.chunk, index);
+                __debug__("allocate() %p group %lu page %lu chunk %lu index %lu\n",
+                    p, state.group, state.page, state.chunk, index);
                 // TODO: this hardcodes 16 bytes
                 return p;
             } else {
@@ -338,10 +345,12 @@ namespace containers {
                     auto& descriptor = (*page_group_descriptors_)[group];
                     auto& page_size_bitmap = descriptor.page_size_bitmaps[ChunkSize::index];
 
-                    auto page_value = page_size_bitmap.get();
+                    auto page_size_value = page_size_bitmap.get();
+                    if (!page_size_value)
+                        goto new_page;
                     for (std::size_t page = 0; page < 64; ++page) {
                         // TODO: page is per-thread
-                        if ((page_value >> page) & 1) {
+                        if ((page_size_value >> page) & 1) {
                             auto chunk_value = descriptor.page_chunk_bitmaps[page].get();
                             for (std::size_t chunk = 0; chunk < 64; ++chunk) {
                                 if ((chunk_value >> chunk) & 1) {
@@ -358,6 +367,19 @@ namespace containers {
                             }
                         }
                     }
+
+                new_page:
+                    auto& page_bitmap = descriptor.page_bitmap;
+                    auto page_value = page_bitmap.get();
+                    for (std::size_t page = 0; page < 64; ++page) {
+                        if (((page_value >> page) & 1) == 0) {
+                            page_bitmap.set_bit(page);
+                            page_size_bitmap.set_bit(page);
+                            descriptor.page_chunk_bitmaps[page].set_bit(0);
+                            setup_allocator_state(state, group, page, 0);
+                            return true;
+                        }
+                    }
                 }
             }
 
@@ -366,7 +388,7 @@ namespace containers {
                 auto& descriptor = (*page_group_descriptors_)[group];
                 descriptor.page_bitmap.set_bit(0);
                 descriptor.page_size_bitmaps[ChunkSize::index].set_bit(0);
-                descriptor.page_chunk_element_bitmaps[0][0].set_bit(0);
+                descriptor.page_chunk_bitmaps[0].set_bit(0);
                 (*page_group_liveset_).set_bit(group);
                 setup_allocator_state(state, group, 0, 0);
                 return true;
@@ -404,20 +426,18 @@ namespace containers {
             // TODO: hardcodes 16bytes
             auto index = (address - ((uint64_t)&(*page_groups_)[group][page] + chunk * 1024)) / 16;
 
-            //fprintf(stderr, "deallocate() %p group %lu page %lu chunk %lu index %lu\n",
-            //        ptr, group, page, chunk, index);
+            __debug__("deallocate() %p group %lu page %lu chunk %lu index %lu\n",
+                ptr, group, page, chunk, index);
             auto& descriptor = (*page_group_descriptors_)[group];
             assert(descriptor.page_chunk_element_bitmaps[page][chunk].get_bit(index));
             descriptor.page_chunk_element_bitmaps[page][chunk].clear_bit(index);
             if (descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0) {
                 descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
+                if (descriptor.page_chunk_bitmaps[page].get() == 0) {
+                    descriptor.page_bitmap.clear_bit(page);
+                    descriptor.page_size_bitmaps[ChunkSize::index].clear_bit(page);
+                }
             }
-
-            // TODO:
-            // If empty,
-            //  Deallocates chunk from page
-            //  If empty,
-            //   Deallocates page from group (places group on live set)
         }
     };
 

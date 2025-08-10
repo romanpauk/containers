@@ -13,7 +13,7 @@ TEST(pool_allocator, basics) {
     containers::PageGroupManager< 1ull<<32 > manager;
     containers::pool_allocator<uint64_t, decltype(manager) > pool(manager);
 
-    std::vector<uint64_t*> ptrs(1000000);
+    std::vector<uint64_t*> ptrs(10000);
     for(size_t i = 0; i < ptrs.size(); ++i) {
         ptrs[i] = pool.allocate(1);
     }

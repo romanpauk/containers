@@ -12,7 +12,7 @@
 const int N = 1<<21;
 
 static void pool_allocator_allocate(benchmark::State& state) {
-    containers::PageGroupManager< 1ull<<32 > manager;
+    containers::PageGroupManager< 1ull<<34 > manager;
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
