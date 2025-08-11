@@ -232,6 +232,13 @@ namespace containers {
         //
         uint64_t thread_id;
 
+        enum {
+            StateDead,
+            StateLive,
+            StateFull,
+        };
+
+        uint64_t state;
         bitmap<64> page_bitmap;
         std::array<bitmap<64>, 7> page_size_bitmaps;
         std::array<bitmap<64>, 64> page_chunk_bitmaps;
@@ -271,6 +278,8 @@ namespace containers {
         std::size_t page_groups_index_ = 0;
 
         uint64_t page_group_full_;
+
+        // std::priority_queue<uint64_t> page_group_liveset_queue_;
 
         PageGroupManager() {
             memory_buffer_builder builder;
@@ -347,7 +356,6 @@ namespace containers {
             auto group = dist/PageGroupSize;
             auto page = dist/PageSize & 63;
 
-            // TODO: scan existing PageChunks for non-full ones
             auto& descriptor = (*page_group_descriptors_)[group];
             auto& chunk_bitmap = descriptor.page_chunk_bitmaps[page];
             auto chunk = chunk_bitmap.ffz();
@@ -366,12 +374,72 @@ namespace containers {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
 
             {
+                // TODO: this is as fast as it gets, faster than other allocators.
+                // But we should try to use some other page first.
+                // Try to reuse the same group in linear fashion
+                auto& descriptor = (*page_group_descriptors_)[state.group];
+#if 1
+                //
+                // TODO: ok, this is pretty fast... looks for chunk we can reuse
+                //
+                auto& page_size_bitmap = descriptor.page_size_bitmaps[ChunkSize::index];
+                auto page_size_value = page_size_bitmap.get();
+
+                // https://lemire.me/blog/2018/02/21/iterating-over-set-bits-quickly/
+                while (page_size_value != 0) {
+                    uint64_t p = page_size_value & -page_size_value;
+                    std::size_t page = __builtin_ctzl(page_size_value);
+                    page_size_value ^= p;
+
+                    // TODO: page is per-thread
+                    assert(descriptor.page_bitmap.get_bit(page) == 1);
+                    auto chunk_value = descriptor.page_chunk_bitmaps[page].get();
+                    while (chunk_value != 0) {
+                        uint64_t c = chunk_value & -chunk_value;
+                        std::size_t chunk = __builtin_ctzl(chunk_value);
+                        chunk_value ^= c;
+                        if (descriptor.page_chunk_element_bitmaps[page][chunk].get() != (uint64_t)-1) {
+                            setup_allocator_state(state, state.group, page, chunk);
+                            return true;
+                        }
+                        //} else {
+                        //    descriptor.page_chunk_bitmaps[page].set_bit(chunk);
+                        //    setup_allocator_state(state, state.group, page, chunk);
+                        //    return true;
+                        //}
+                    }
+
+                    // No chunk was reused, take some empty
+                    //chunk_value = descriptor.page_chunk_bitmaps[page].tzcnt();
+                    //if (chunk_value <
+                }
+
+                // TODO: no page was reused, take some empty
+#endif
+                if (state.page + 1 < descriptor.page_bitmap.size()) {
+                    if (descriptor.page_bitmap.get_bit(state.page + 1) == 0) {
+                        descriptor.page_bitmap.set_bit(state.page + 1);
+                        descriptor.page_size_bitmaps[ChunkSize::index].set_bit(state.page);
+                        descriptor.page_chunk_bitmaps[state.page].set_bit(0);
+                        setup_allocator_state(state, state.group, state.page + 1, 0);
+                        return true;
+                    }
+                }
+
+            }
+
+            {
+                //while (!page_group_liveset_queue_.empty()) {
+                //    auto group = page_group_liveset_queue_.top();
+                //}
+
                 auto& liveset = *page_group_liveset_;
                 for (std::size_t group = 1; group < PageGroupCount; ++group) {
                     // TODO: pages are never removed from live-set
                     // TODO: descriptor.thread_id is never reset
                     if (!liveset.get_bit(group))
                         break;
+
                     auto& descriptor = (*page_group_descriptors_)[group];
                     auto& page_size_bitmap = descriptor.page_size_bitmaps[ChunkSize::index];
                     auto page_size_value = page_size_bitmap.get();
@@ -421,7 +489,11 @@ namespace containers {
                 descriptor.page_bitmap.set_bit(0);
                 descriptor.page_size_bitmaps[ChunkSize::index].set_bit(0);
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
-                (*page_group_liveset_).set_bit(group);
+                descriptor.state = PageGroupDescriptor::StateLive;
+
+                //page_group_liveset_queue_.push(group);
+                //(*page_group_liveset_).set_bit(group);
+
                 setup_allocator_state(state, group, 0, 0);
                 protect_group(group, PROT_READ | PROT_WRITE);
                 return true;
@@ -478,7 +550,8 @@ namespace containers {
                             protect_group(group, PROT_NONE);
 
                             // TODO: remove from liveset
-                            //
+                            // This page is completely free
+                            descriptor.state = PageGroupDescriptor::StateDead;
                         }
                     }
                 }
