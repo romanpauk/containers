@@ -9,7 +9,7 @@
 
 #include <benchmark/benchmark.h>
 
-const int N = 1<<28;
+const int N = 1<<25;
 
 static void pool_allocator_allocate(benchmark::State& state) {
     containers::PageGroupManager< 1ull<<35 > manager;

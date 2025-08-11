@@ -230,11 +230,19 @@ namespace containers {
         // TODO: will need some page state:
         //  thread id, live/dead etc.
         //
+        uint64_t thread_id;
 
         bitmap<64> page_bitmap;
         std::array<bitmap<64>, 7> page_size_bitmaps;
         std::array<bitmap<64>, 64> page_chunk_bitmaps;
         std::array<std::array<bitmap<64>, 64>, 64> page_chunk_element_bitmaps;
+    };
+
+    struct thread_id {
+        static uint64_t get() { return (uint64_t)&id_; }
+
+    private:
+        static constexpr uint64_t id_ = 0;
     };
 
     template<std::size_t Size> struct PageGroupManager {
@@ -356,10 +364,12 @@ namespace containers {
         // TODO: handle races, need a while()
         template<typename T> bool allocate_update_page(PoolAllocatorState<T>& state) {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+
             {
                 auto& liveset = *page_group_liveset_;
                 for (std::size_t group = 1; group < PageGroupCount; ++group) {
                     // TODO: pages are never removed from live-set
+                    // TODO: descriptor.thread_id is never reset
                     if (!liveset.get_bit(group))
                         break;
                     auto& descriptor = (*page_group_descriptors_)[group];
@@ -407,6 +417,7 @@ namespace containers {
             if (page_groups_index_ < PageGroupCount) {
                 auto group = page_groups_index_++;
                 auto& descriptor = (*page_group_descriptors_)[group];
+                descriptor.thread_id = thread_id::get();
                 descriptor.page_bitmap.set_bit(0);
                 descriptor.page_size_bitmaps[ChunkSize::index].set_bit(0);
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
@@ -454,18 +465,25 @@ namespace containers {
                 ptr, group, page, chunk, index);
 
             auto& descriptor = (*page_group_descriptors_)[group];
-            assert(descriptor.page_chunk_element_bitmaps[page][chunk].get_bit(index));
-            descriptor.page_chunk_element_bitmaps[page][chunk].clear_bit(index);
-            if (descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0) {
-                descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
-                if (descriptor.page_chunk_bitmaps[page].get() == 0) {
-                    descriptor.page_bitmap.clear_bit(page);
-                    descriptor.page_size_bitmaps[ChunkSize::index].clear_bit(page);
+            if (descriptor.thread_id == thread_id::get()) {
+                assert(descriptor.page_chunk_element_bitmaps[page][chunk].get_bit(index));
+                descriptor.page_chunk_element_bitmaps[page][chunk].clear_bit(index);
+                if (descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0) {
+                    descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
+                    if (descriptor.page_chunk_bitmaps[page].get() == 0) {
+                        descriptor.page_bitmap.clear_bit(page);
+                        descriptor.page_size_bitmaps[ChunkSize::index].clear_bit(page);
 
-                    if (state.group != group) {
-                        protect_group(group, PROT_NONE);
+                        if (state.group != group) {
+                            protect_group(group, PROT_NONE);
+
+                            // TODO: remove from liveset
+                            //
+                        }
                     }
                 }
+            } else {
+                // TODO: non-owning thread path
             }
         }
     };

@@ -102,6 +102,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:${CONTAINERS_WARNINGS_GCC}>)
     target_compile_options(containers_benchmark PRIVATE $<$<CXX_COMPILER_ID:MSVC>:${CONTAINERS_WARNINGS_MSVC} /bigobj>)
     target_compile_options(containers_benchmark PRIVATE -march=native)
+    # target_compile_options(containers_benchmark PRIVATE -g -fno-omit-frame-pointer)
 
     target_sanitize(CONTAINERS containers_benchmark)
 endif()
