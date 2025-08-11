@@ -9,10 +9,10 @@
 
 #include <benchmark/benchmark.h>
 
-const int N = 1<<21;
+const int N = 1<<28;
 
 static void pool_allocator_allocate(benchmark::State& state) {
-    containers::PageGroupManager< 1ull<<34 > manager;
+    containers::PageGroupManager< 1ull<<35 > manager;
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
@@ -20,6 +20,7 @@ static void pool_allocator_allocate(benchmark::State& state) {
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
             ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = 1;
         }
 
         //state.PauseTiming();
@@ -40,6 +41,7 @@ static void allocator_allocate(benchmark::State& state) {
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
             ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = 1;
         }
         for (int i = 0; i < state.range(); ++i) {
             allocator.deallocate(ptrs[i], sizeof(uint64_t));

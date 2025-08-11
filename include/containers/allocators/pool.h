@@ -226,12 +226,12 @@ namespace containers {
     //
 
     struct PageGroupDescriptor {
-        bitmap<64> page_bitmap;
-
         //
         // TODO: will need some page state:
         //  thread id, live/dead etc.
         //
+
+        bitmap<64> page_bitmap;
         std::array<bitmap<64>, 7> page_size_bitmaps;
         std::array<bitmap<64>, 64> page_chunk_bitmaps;
         std::array<std::array<bitmap<64>, 64>, 64> page_chunk_element_bitmaps;
@@ -252,6 +252,9 @@ namespace containers {
         using PageGroupLiveset = bitmap<PageGroupCount>;
         PageGroupLiveset* page_group_liveset_;
 
+        // TODO: right now, there is no use for deadset, as free pages
+        // are simply kept in liveset. Not sure where their deallocated state will be
+        // tracked.
         using PageGroupDeadset = bitmap<PageGroupCount>;
         PageGroupDeadset* page_group_deadset_;
 
@@ -264,25 +267,28 @@ namespace containers {
         PageGroupManager() {
             memory_buffer_builder builder;
             builder.add<PageGroupDescriptors>();
-            builder.add<PageGroupLiveset>();
-            builder.add<PageGroupDeadset>();
+            builder.add<PageGroupLiveset, 4096>();
+            builder.add<PageGroupDeadset, 4096>();
             builder.add<PageGroups, PageGroupSize>();
 
             memory_size_ = builder.size();
-            memory_ = mmap(0, memory_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            memory_ = mmap(0, memory_size_, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, memory_size_);
             page_group_descriptors_ = allocator.allocate<PageGroupDescriptors>();
-            page_group_liveset_ = allocator.allocate<PageGroupLiveset>();
-            page_group_deadset_ = allocator.allocate<PageGroupDeadset>();
+            page_group_liveset_ = allocator.allocate<PageGroupLiveset, 4096>();
+            page_group_deadset_ = allocator.allocate<PageGroupDeadset, 4096>();
             page_groups_ = allocator.allocate<PageGroups, PageGroupSize>();
+
+            protect(page_group_descriptors_, sizeof(PageGroupDescriptors), PROT_READ | PROT_WRITE);
+            protect(page_group_liveset_, sizeof(PageGroupLiveset), PROT_READ | PROT_WRITE);
 
             allocate_page_zero();
         }
 
         void allocate_page_zero() {
-            // TODO: retval
-            mprotect(&(*page_groups_)[0], PageGroupSize, PROT_READ);
+            protect_group(0, PROT_NONE);
+            // TODO: descriptor protection
 
             ++page_groups_index_;
             auto& descriptor = (*page_group_descriptors_)[0];
@@ -293,6 +299,16 @@ namespace containers {
             munmap(memory_, memory_size_);
         }
 
+        void protect_group(uint64_t group, int prot) {
+            protect(&(*page_groups_)[group], PageGroupSize, prot);
+        }
+
+        void protect(void* ptr, std::size_t size, int prot) {
+            if (mprotect(ptr, size, prot) != 0) {
+                std::abort();
+            }
+        }
+
         // Single-threaded
         template<typename T> T* allocate(PoolAllocatorState<T>& state) {
         again:
@@ -301,8 +317,10 @@ namespace containers {
             if (__likely__(index < bitmap->size())) {
                 bitmap->set_bit(index);
                 T* p = (T*)(state.chunk_ptr + 16 * index);
+
                 __debug__("allocate() %p group %lu page %lu chunk %lu index %lu\n",
                     p, state.group, state.page, state.chunk, index);
+
                 return p;
             } else {
                 if (allocate_update_chunk(state))
@@ -341,6 +359,7 @@ namespace containers {
             {
                 auto& liveset = *page_group_liveset_;
                 for (std::size_t group = 1; group < PageGroupCount; ++group) {
+                    // TODO: pages are never removed from live-set
                     if (!liveset.get_bit(group))
                         break;
                     auto& descriptor = (*page_group_descriptors_)[group];
@@ -372,6 +391,10 @@ namespace containers {
                     auto& page_bitmap = descriptor.page_bitmap;
                     auto page = page_bitmap.ffz();
                     if (page < page_bitmap.size()) {
+                        if (page_bitmap.get() == 0) {
+                            protect_group(group, PROT_READ | PROT_WRITE);
+                        }
+
                         page_bitmap.set_bit(page);
                         descriptor.page_size_bitmaps[ChunkSize::index].set_bit(page);
                         descriptor.page_chunk_bitmaps[page].set_bit(0);
@@ -389,6 +412,7 @@ namespace containers {
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
                 (*page_group_liveset_).set_bit(group);
                 setup_allocator_state(state, group, 0, 0);
+                protect_group(group, PROT_READ | PROT_WRITE);
                 return true;
             } else {
                 std::abort();
@@ -428,6 +452,7 @@ namespace containers {
 
             __debug__("deallocate() %p group %lu page %lu chunk %lu index %lu\n",
                 ptr, group, page, chunk, index);
+
             auto& descriptor = (*page_group_descriptors_)[group];
             assert(descriptor.page_chunk_element_bitmaps[page][chunk].get_bit(index));
             descriptor.page_chunk_element_bitmaps[page][chunk].clear_bit(index);
@@ -437,7 +462,9 @@ namespace containers {
                     descriptor.page_bitmap.clear_bit(page);
                     descriptor.page_size_bitmaps[ChunkSize::index].clear_bit(page);
 
-                    // TODO: this group has no pages allocated
+                    if (state.group != group) {
+                        protect_group(group, PROT_NONE);
+                    }
                 }
             }
         }
