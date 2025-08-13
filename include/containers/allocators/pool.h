@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <iostream>
 
 #include <immintrin.h>
 #include <sys/mman.h>
@@ -20,11 +21,18 @@
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
 // #define DEBUG
+// #define STATS
 
 #if defined(DEBUG)
-#define __debug__(...) { fprintf(stderr, __VA_ARGS__); }
+#define __debug__(...) do { fprintf(stderr, __VA_ARGS__) } while(0)
 #else
 #define __debug__(...)
+#endif
+
+#if defined(STATS)
+#define __stats__(...) do { __VA_ARGS__; } while(0)
+#else
+#define __stats__(...)
 #endif
 
 namespace containers {
@@ -252,6 +260,30 @@ namespace containers {
         static constexpr uint64_t id_ = 0;
     };
 
+    struct PageGroupManagerStats {
+        uint64_t allocate_update_chunk[2];
+        uint64_t allocate_update_page;
+        uint64_t allocate_update_page_used_page;
+        uint64_t allocate_update_page_used_chunk;
+        uint64_t allocate_update_page_free_chunk;
+        uint64_t allocate_update_page_free_page;
+        uint64_t allocate_update_group;
+        uint64_t allocate_update_group_used_group;
+        uint64_t allocate_update_group_new_group;
+    };
+
+    std::ostream& operator << (std::ostream& stream, const PageGroupManagerStats& stats) {
+        return stream
+            << "chunk " << (double)stats.allocate_update_chunk[0] / stats.allocate_update_chunk[1] << " (" << stats.allocate_update_chunk[1] << ")"
+            << " used page " << (double)stats.allocate_update_page_used_page / stats.allocate_update_page << " (" << stats.allocate_update_page_used_page << ")"
+            << " used chunk " << (double)stats.allocate_update_page_used_chunk / stats.allocate_update_page << " (" << stats.allocate_update_page_used_chunk << ")"
+            << " free chunk " << (double)stats.allocate_update_page_free_chunk / stats.allocate_update_page << " (" << stats.allocate_update_page_free_chunk << ")"
+            << " free page " << (double)stats.allocate_update_page_free_page / stats.allocate_update_page << " (" << stats.allocate_update_page_free_page << ")"
+            << " used group " << (double)stats.allocate_update_group_used_group / (stats.allocate_update_group + 1) << " (" << stats.allocate_update_group_used_group << ")"
+            << " new group " << (double)stats.allocate_update_group_new_group / (stats.allocate_update_group + 1) << " (" << stats.allocate_update_group_new_group << ")"
+            ;
+    }
+
     template<std::size_t Size> struct PageGroupManager {
         static constexpr std::size_t PageGroupSize = 1 << 22;
         static constexpr std::size_t PageGroupCount = Size / PageGroupSize;
@@ -277,11 +309,13 @@ namespace containers {
         PageGroups* page_groups_;
         std::size_t page_groups_index_ = 0;
 
-        uint64_t page_group_full_;
+        PageGroupManagerStats* stats_ = nullptr;
 
-        // std::priority_queue<uint64_t> page_group_liveset_queue_;
-
-        PageGroupManager() {
+        PageGroupManager(PageGroupManagerStats* stats = nullptr)
+        #if defined(STATS)
+            : stats_(stats)
+        #endif
+        {
             memory_buffer_builder builder;
             builder.add<PageGroupDescriptors>();
             builder.add<PageGroupLiveset, 4096>();
@@ -367,10 +401,13 @@ namespace containers {
             auto group = dist/PageGroupSize;
             auto page = dist/PageSize & 63;
 
+            __stats__(++stats_->allocate_update_chunk[1];);
+
             auto& descriptor = (*page_group_descriptors_)[group];
             auto& chunk_bitmap = descriptor.page_chunk_bitmaps[page];
             auto chunk = chunk_bitmap.ffz();
             if (__likely__(chunk < chunk_bitmap.size())) {
+                __stats__(++stats_->allocate_update_chunk[0];);
                 chunk_bitmap.set_bit(chunk);
                 setup_allocator_state(state, group, page, chunk);
                 return true;
@@ -386,10 +423,12 @@ namespace containers {
 
             // Try current group first
             auto& descriptor = (*page_group_descriptors_)[state.group];
-#if 1
+
             // Look for an used page with a chunk that can be reused by this size
             auto& page_size_bitmap = descriptor.page_size_bitmaps[ChunkSize::index];
             auto page_size_value = page_size_bitmap.get();
+
+            __stats__(++stats_->allocate_update_page;);
 
             // https://lemire.me/blog/2018/02/21/iterating-over-set-bits-quickly/
             while (page_size_value != 0) {
@@ -405,6 +444,20 @@ namespace containers {
 
                 uint64_t chunk_value = 0;
 
+                // Iterate free chunks
+                auto chunk = descriptor.page_chunk_bitmaps[page].ffz();
+                if (chunk < descriptor.page_chunk_bitmaps[page].size()) {
+                    __stats__(
+                        ++stats_->allocate_update_page_free_chunk;
+                        ++stats_->allocate_update_page_used_page;
+                    );
+
+                    assert(descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0);
+                    descriptor.page_chunk_bitmaps[page].set_bit(chunk);
+                    setup_allocator_state(state, state.group, page, chunk);
+                    return true;
+                }
+
                 // Iterate chunks in use
                 chunk_value = descriptor.page_chunk_bitmaps[page].get();
                 while (chunk_value != 0) {
@@ -414,31 +467,21 @@ namespace containers {
 
                     assert(descriptor.page_chunk_bitmaps[page].get_bit(chunk) == 1);
                     if (descriptor.page_chunk_element_bitmaps[page][chunk].get() != (uint64_t)-1) {
+                        __stats__(
+                            ++stats_->allocate_update_page_used_chunk;
+                            ++stats_->allocate_update_page_used_page;
+                        );
+
                         setup_allocator_state(state, state.group, page, chunk);
                         return true;
                     }
                 }
-
-                // Iterate free chunks
-                chunk_value = ~descriptor.page_chunk_bitmaps[page].get();
-                while (chunk_value != 0) {
-                    uint64_t c = chunk_value & -chunk_value;
-                    std::size_t chunk = __builtin_ctzl(chunk_value);
-                    chunk_value ^= c;
-
-                    assert(descriptor.page_chunk_element_bitmaps[page][chunk].get() == 0);
-                    descriptor.page_chunk_bitmaps[page].set_bit(chunk);
-                    setup_allocator_state(state, state.group, page, chunk);
-                    return true;
-                }
             }
-#endif
+
             // Iterate free pages
-            auto page_value = ~descriptor.page_bitmap.get();
-            while (page_value != 0) {
-                uint64_t p = page_value & -page_value;
-                std::size_t page = __builtin_ctzl(page_value);
-                page_value ^= p;
+            auto page = descriptor.page_bitmap.ffz();
+            if (page < descriptor.page_bitmap.size()) {
+                __stats__(++stats_->allocate_update_page_free_page;);
 
                 assert(descriptor.page_bitmap.get_bit(page) == 0);
                 descriptor.page_bitmap.set_bit(page);
@@ -454,14 +497,18 @@ namespace containers {
         template<typename T> bool allocate_update_group(PoolAllocatorState<T>& state) {
             using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
 
+            __stats__(++stats_->allocate_update_group;);
+
             for (std::size_t group = 1; group < PageGroupCount; ++group) {
                 // TODO: pages are never removed from live-set
                 // TODO: descriptor.thread_id is never reset
                 if (!page_group_liveset_->get_bit(group))
                     break;
 
-                if (allocate_update_page(state, group))
+                if (allocate_update_page(state, group)) {
+                    __stats__(++stats_->allocate_update_group_used_group;);
                     return true;
+                }
             }
 
             if (page_groups_index_ < PageGroupCount) {
@@ -475,6 +522,8 @@ namespace containers {
 
                 //page_group_liveset_queue_.push(group);
                 //(*page_group_liveset_).set_bit(group);
+
+                __stats__(++stats_->allocate_update_group_new_group;);
 
                 setup_allocator_state(state, group, 0, 0);
                 protect_group(group, PROT_READ | PROT_WRITE);

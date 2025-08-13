@@ -8,6 +8,7 @@
 #include <containers/allocators/pool.h>
 
 #include <benchmark/benchmark.h>
+#include <random>
 
 const int N = 1<<28;
 
@@ -22,7 +23,8 @@ uint64_t xorshift64(uint64_t& state) {
 }
 
 static void pool_allocator_allocate_seq(benchmark::State& state) {
-    containers::PageGroupManager< 1ull<<35 > manager;
+    containers::PageGroupManagerStats stats {{0}};
+    containers::PageGroupManager< 1ull<<35 > manager(&stats);
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
@@ -33,33 +35,45 @@ static void pool_allocator_allocate_seq(benchmark::State& state) {
             (*ptrs[i]) = 1;
         }
 
-        //state.PauseTiming();
         for (int i = 0; i < state.range(); ++i) {
             allocator.deallocate(ptrs[i], 1);
         }
-        //state.ResumeTiming();
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());
+    // std::cerr << stats << std::endl;
 }
 
 static void pool_allocator_allocate_rnd(benchmark::State& state) {
-    containers::PageGroupManager< 1ull<<35 > manager;
+    containers::PageGroupManagerStats stats {{0}};
+    containers::PageGroupManager< 1ull<<35 > manager(&stats);
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
     uint64_t tmp = 12345;
+    uint64_t count = 0;
+    for (int i = 0; i < state.range(); ++i) {
+        auto rnd = xorshift64(tmp);
+        if ((rnd ^ (rnd >> 33)) & 1) {
+            ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = 1;
+            ++count;
+        }
+    }
+
+    __stats__(std::cerr << "allocation ratio " << (double)count / state.range() << std::endl;);
+
+    auto rng = std::default_random_engine {};
+    std::shuffle(std::begin(ptrs), std::end(ptrs), rng);
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
-            // Select random position
-            auto p = xorshift64(tmp) & (state.range() - 1);
-            if (ptrs[p]) {
-                allocator.deallocate(ptrs[p], 1);
-                ptrs[p] = 0;
+            if (ptrs[i]) {
+                allocator.deallocate(ptrs[i], 1);
+                ptrs[i] = 0;
             } else {
-                ptrs[p] = allocator.allocate(1);
-                (*ptrs[p]) = 1;
+                ptrs[i] = allocator.allocate(1);
+                (*ptrs[i]) = 1;
             }
         }
     }
@@ -70,6 +84,7 @@ static void pool_allocator_allocate_rnd(benchmark::State& state) {
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());
+    __stats__(std::cerr << stats << std::endl;);
 }
 
 static void allocator_allocate_seq(benchmark::State& state) {
@@ -82,7 +97,7 @@ static void allocator_allocate_seq(benchmark::State& state) {
             ptrs[i] = allocator.allocate(1);
             (*ptrs[i]) = 1;
         }
-        for (int i = 0; i < state.range(); ++i) {
+    for (int i = 0; i < state.range(); ++i) {
             allocator.deallocate(ptrs[i], sizeof(uint64_t));
         }
     }
@@ -95,17 +110,29 @@ static void allocator_allocate_rnd(benchmark::State& state) {
 
     std::vector<uint64_t*> ptrs(state.range());
     uint64_t tmp = 12345;
+    uint64_t count = 0;
+    for (int i = 0; i < state.range(); ++i) {
+        auto rnd = xorshift64(tmp);
+        if ((rnd ^ (rnd >> 33)) & 1) {
+            ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = 1;
+            ++count;
+        }
+    }
+
+    __stats__(std::cerr << "allocation ratio " << (double)count / state.range() << std::endl;);
+
+    auto rng = std::default_random_engine {};
+    std::shuffle(std::begin(ptrs), std::end(ptrs), rng);
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
-            // Select random position
-            auto p = xorshift64(tmp) & (state.range() - 1);
-            if (ptrs[p]) {
-                allocator.deallocate(ptrs[p], 1);
-                ptrs[p] = 0;
+            if (ptrs[i]) {
+                allocator.deallocate(ptrs[i], 1);
+                ptrs[i] = 0;
             } else {
-                ptrs[p] = allocator.allocate(1);
-                (*ptrs[p]) = 1;
+                ptrs[i] = allocator.allocate(1);
+                (*ptrs[i]) = 1;
             }
         }
     }
