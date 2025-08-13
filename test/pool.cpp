@@ -9,6 +9,17 @@
 
 #include <gtest/gtest.h>
 
+TEST(pool_allocator, sizes) {
+    containers::PageGroupManager< 1ull<<32 > manager;
+    containers::pool_allocator<uint64_t, decltype(manager) > pool(manager);
+
+    std::cerr << "sizeof(PageGroup) = " << decltype(manager)::PageGroupSize << std::endl;
+    std::cerr << "sizeof(PageGroupDescriptor) = " << sizeof(containers::PageGroupDescriptor) << ", ratio " <<
+        (double)sizeof(containers::PageGroupDescriptor) / decltype(manager)::PageGroupSize << std::endl;
+    std::cerr << "sizeof(PageGroupManager) = " << sizeof(decltype(manager)) << std::endl;
+
+}
+
 TEST(pool_allocator, basics) {
     containers::PageGroupManager< 1ull<<32 > manager;
     containers::pool_allocator<uint64_t, decltype(manager) > pool(manager);

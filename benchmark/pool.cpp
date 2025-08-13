@@ -10,7 +10,7 @@
 #include <benchmark/benchmark.h>
 #include <random>
 
-const int N = 1<<28;
+const std::size_t N = 1<<28;
 
 /* The state must be initialized to non-zero */
 // https://en.wikipedia.org/wiki/Xorshift
