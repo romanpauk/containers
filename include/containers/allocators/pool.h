@@ -342,6 +342,8 @@ namespace containers {
 
         PageGroupManagerStats* stats_ = nullptr;
 
+        static bitmap<64> default_bitmap_;
+
         PageGroupManager(PageGroupManagerStats* stats = nullptr)
         #if defined(STATS)
             : stats_(stats)
@@ -602,12 +604,14 @@ namespace containers {
             state.group = group;
         }
 
-        void init_allocator_state(PoolAllocatorState& state) {
+        static PoolAllocatorState init_allocator_state() {
+            PoolAllocatorState state;
             state.chunk = 0;
-            state.chunk_ptr = (uintptr_t)&(*page_groups_)[0][0];
+            state.chunk_ptr = 0;
             state.page = 0;
             state.group = 0;
-            state.chunk_elements_bitmap = &(*page_group_descriptors_)[0].page_chunk_elements_bitmaps[0][0];
+            state.chunk_elements_bitmap = &default_bitmap_;
+            return state;
         }
 
         template<typename Metadata> void deallocate(PoolAllocatorState& state, void* ptr) {
@@ -655,25 +659,42 @@ namespace containers {
         }
     };
 
+    template<std::size_t Size> bitmap<64> PageGroupManager<Size>::default_bitmap_(-1);
+
+    template<std::size_t Size> struct GlobalPageGroupManager: PageGroupManager<Size> {
+        GlobalPageGroupManager(PageGroupManagerStats* stats = nullptr)
+            : PageGroupManager<Size>(stats)
+            , state_(PageGroupManager<Size>::init_allocator_state())
+        {}
+
+        template<typename Metadata> void* allocate() {
+            return PageGroupManager<Size>::template allocate<Metadata>(state_);
+        }
+
+        template<typename Metadata> void deallocate(void* ptr) {
+            return PageGroupManager<Size>::template deallocate<Metadata>(state_, ptr);
+        }
+
+    private:
+        PoolAllocatorState state_;
+    };
+
     template<typename T, typename PageGroupManagerT> struct pool_allocator {
         pool_allocator(PageGroupManagerT& manager)
             : manager_(manager)
-        {
-            manager_.init_allocator_state(state_);
-        }
+        {}
 
         T* allocate(std::size_t n) {
             assert(n == 1);(void)n;
-            return (T*)manager_.template allocate<ClassMetadataType<T>>(state_);
+            return (T*)manager_.template allocate<ClassMetadataType<T>>();
         }
 
         void deallocate(T* ptr, std::size_t n) {
             assert(n == 1);(void)n;
-            manager_.template deallocate<ClassMetadataType<T>>(state_, ptr);
+            manager_.template deallocate<ClassMetadataType<T>>(ptr);
         }
 
         PageGroupManagerT& manager_;
-        PoolAllocatorState state_;
     };
 }
 
