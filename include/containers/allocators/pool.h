@@ -24,7 +24,7 @@
 // #define STATS
 
 #if defined(DEBUG)
-#define __debug__(...) do { fprintf(stderr, __VA_ARGS__) } while(0)
+#define __debug__(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
 #else
 #define __debug__(...)
 #endif
@@ -218,6 +218,7 @@ namespace containers {
     template<std::size_t ClassSize> struct ClassMetadata {
         // TODO:
         static constexpr uint64_t page_size = 65536;
+        static constexpr uint64_t page_count = 64;
 
         static constexpr uint64_t class_size = ClassSize;
         static_assert(class_size <= 1024);
@@ -232,7 +233,9 @@ namespace containers {
         static constexpr uint64_t class_count = chunk_size / class_size;
         static_assert((class_count & (class_count - 1)) == 0);
 
-        static constexpr uint64_t class_count_mask = 64 - 1; //(uint64_t(1) << (class_count - 1)) - 1;
+        // TODO: is this intentional?
+        static_assert(class_count == 64);
+        static constexpr uint64_t class_count_mask = -1;
     };
 
     template<typename T> using ClassMetadataType = ClassMetadata< RoundUp(std::max(sizeof(T), sizeof(uint64_t) * 2)) >;
@@ -316,10 +319,10 @@ namespace containers {
     }
 
     template<std::size_t Size> struct PageGroupManager {
-        static constexpr std::size_t PageGroupSize = 1 << 22;
-        static constexpr std::size_t PageGroupCount = Size / PageGroupSize;
-        static constexpr std::size_t PageSize = PageGroupSize / 64;
-        static constexpr std::size_t PageCount = PageGroupCount * 64;
+        static constexpr uint64_t PageGroupSize = 1 << 22;
+        static constexpr uint64_t PageGroupCount = Size / PageGroupSize;
+        static constexpr uint64_t PageSize = PageGroupSize / 64;
+        static constexpr uint64_t PageCount = PageGroupCount * 64;
 
         void *memory_;
         std::size_t memory_size_;
@@ -451,6 +454,10 @@ namespace containers {
                 chunk_bitmap.set_bit(chunk);
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + chunk);
                 setup_allocator_state<Metadata>(state, group, page, chunk);
+
+                __debug__("allocate_update_chunk() group %lu page %lu chunk %lu\n",
+                    state.group, state.page, state.chunk);
+
                 return true;
             } else {
                 return false;
@@ -496,7 +503,7 @@ namespace containers {
 
                 // Iterate free chunks
                 chunk = descriptor.page_chunk_bitmaps[page].ffz();
-                if (chunk < descriptor.page_chunk_bitmaps[page].size()) {
+                if (chunk < Metadata::chunk_count) {
                     __stats__(
                         ++stats_->allocate_update_page_free_chunk;
                         ++stats_->allocate_update_page_used_page;
@@ -542,7 +549,7 @@ namespace containers {
 
             // Iterate free pages
             auto page = descriptor.page_bitmap.ffz();
-            if (page < descriptor.page_bitmap.size()) {
+            if (page < Metadata::page_count) {
                 __stats__(++stats_->allocate_update_page_free_page;);
 
                 assert(descriptor.page_bitmap.get_bit(page) == 0);
@@ -596,6 +603,10 @@ namespace containers {
 
         template<typename Metadata> void setup_allocator_state(PoolAllocatorState& state, uint64_t group, uint64_t page, uint64_t chunk) {
             assert(group > 0);
+            assert(group > 0);
+            assert(page < Metadata::page_count);
+            assert(chunk < Metadata::chunk_count);
+
             auto& descriptor = (*page_group_descriptors_)[group];
             state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * Metadata::chunk_size;
             state.chunk_elements_bitmap = &descriptor.page_chunk_elements_bitmaps[page][chunk];
@@ -662,6 +673,8 @@ namespace containers {
     template<std::size_t Size> bitmap<64> PageGroupManager<Size>::default_bitmap_(-1);
 
     template<std::size_t Size> struct GlobalPageGroupManager {
+        static constexpr uint64_t PageGroupSize = PageGroupManager<Size>::PageGroupSize;
+
         GlobalPageGroupManager(PageGroupManagerStats* stats = nullptr) {}
 
         template<typename Metadata> void* allocate() {

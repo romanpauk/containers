@@ -10,7 +10,7 @@
 #include <benchmark/benchmark.h>
 #include <random>
 
-const std::size_t N = 1<<28;
+const std::size_t N = 1<<26;
 
 /* The state must be initialized to non-zero */
 // https://en.wikipedia.org/wiki/Xorshift
@@ -22,17 +22,19 @@ uint64_t xorshift64(uint64_t& state) {
 	return state = x;
 }
 
-static void pool_allocator_allocate_seq(benchmark::State& state) {
+template<typename T> T get() { return T(); }
+
+template<typename T> static void pool_allocator_allocate_seq(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
     containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
-    containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
+    containers::pool_allocator<T, decltype(manager) > allocator(manager);
 
-    std::vector<uint64_t*> ptrs(state.range());
+    std::vector<T*> ptrs(state.range());
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
             ptrs[i] = allocator.allocate(1);
-            (*ptrs[i]) = 1;
+            (*ptrs[i]) = get<T>();
         }
 
         for (int i = 0; i < state.range(); ++i) {
@@ -44,19 +46,19 @@ static void pool_allocator_allocate_seq(benchmark::State& state) {
     // std::cerr << stats << std::endl;
 }
 
-static void pool_allocator_allocate_rnd(benchmark::State& state) {
+template<typename T> static void pool_allocator_allocate_rnd(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
     containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
-    containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
+    containers::pool_allocator<T, decltype(manager) > allocator(manager);
 
-    std::vector<uint64_t*> ptrs(state.range());
+    std::vector<T*> ptrs(state.range());
     uint64_t tmp = 12345;
     uint64_t count = 0;
     for (int i = 0; i < state.range(); ++i) {
         auto rnd = xorshift64(tmp);
         if ((rnd ^ (rnd >> 33)) & 1) {
             ptrs[i] = allocator.allocate(1);
-            (*ptrs[i]) = 1;
+            (*ptrs[i]) = get<T>();
             ++count;
         }
     }
@@ -73,7 +75,7 @@ static void pool_allocator_allocate_rnd(benchmark::State& state) {
                 ptrs[i] = 0;
             } else {
                 ptrs[i] = allocator.allocate(1);
-                (*ptrs[i]) = 1;
+                (*ptrs[i]) = get<T>();
             }
         }
     }
@@ -87,15 +89,15 @@ static void pool_allocator_allocate_rnd(benchmark::State& state) {
     __stats__(std::cerr << stats << std::endl;);
 }
 
-static void allocator_allocate_seq(benchmark::State& state) {
-    std::allocator<uint64_t> allocator;
+template<typename T> static void allocator_allocate_seq(benchmark::State& state) {
+    std::allocator<T> allocator;
 
-    std::vector<uint64_t*> ptrs(state.range());
+    std::vector<T*> ptrs(state.range());
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(); ++i) {
             ptrs[i] = allocator.allocate(1);
-            (*ptrs[i]) = 1;
+            (*ptrs[i]) = get<T>();
         }
     for (int i = 0; i < state.range(); ++i) {
             allocator.deallocate(ptrs[i], sizeof(uint64_t));
@@ -105,17 +107,17 @@ static void allocator_allocate_seq(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * state.range());
 }
 
-static void allocator_allocate_rnd(benchmark::State& state) {
-    std::allocator<uint64_t> allocator;
+template<typename T> static void allocator_allocate_rnd(benchmark::State& state) {
+    std::allocator<T> allocator;
 
-    std::vector<uint64_t*> ptrs(state.range());
+    std::vector<T*> ptrs(state.range());
     uint64_t tmp = 12345;
     uint64_t count = 0;
     for (int i = 0; i < state.range(); ++i) {
         auto rnd = xorshift64(tmp);
         if ((rnd ^ (rnd >> 33)) & 1) {
             ptrs[i] = allocator.allocate(1);
-            (*ptrs[i]) = 1;
+            (*ptrs[i]) = get<T>();
             ++count;
         }
     }
@@ -132,7 +134,7 @@ static void allocator_allocate_rnd(benchmark::State& state) {
                 ptrs[i] = 0;
             } else {
                 ptrs[i] = allocator.allocate(1);
-                (*ptrs[i]) = 1;
+                (*ptrs[i]) = get<T>();
             }
         }
     }
@@ -145,9 +147,11 @@ static void allocator_allocate_rnd(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * state.range());
 }
 
-BENCHMARK(pool_allocator_allocate_seq)->Range(1, N);
-BENCHMARK(pool_allocator_allocate_rnd)->Range(1, N);
+using T = uint64_t; //std::array<uint64_t, 16>;
+
+BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
+BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);
 //BENCHMARK(pool_allocator_allocate_global)->Range(1, N);
-BENCHMARK(allocator_allocate_seq)->Range(1, N);
-BENCHMARK(allocator_allocate_rnd)->Range(1, N);
+BENCHMARK_TEMPLATE(allocator_allocate_seq, T)->Range(1, N);
+BENCHMARK_TEMPLATE(allocator_allocate_rnd, T)->Range(1, N);
 
