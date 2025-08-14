@@ -24,7 +24,7 @@ uint64_t xorshift64(uint64_t& state) {
 
 static void pool_allocator_allocate_seq(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
-    containers::GlobalPageGroupManager< 1ull<<35 > manager(&stats);
+    containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
@@ -46,7 +46,7 @@ static void pool_allocator_allocate_seq(benchmark::State& state) {
 
 static void pool_allocator_allocate_rnd(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
-    containers::GlobalPageGroupManager< 1ull<<35 > manager(&stats);
+    containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
     containers::pool_allocator<uint64_t, decltype(manager) > allocator(manager);
 
     std::vector<uint64_t*> ptrs(state.range());
