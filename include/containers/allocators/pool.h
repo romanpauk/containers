@@ -202,16 +202,42 @@ namespace containers {
         std::size_t size_;
     };
 
-    template<std::size_t N> struct PageChunkSize {
-        static_assert((N & (N - 1)) == 0);
-        static_assert(N >= 1024 && N <= 65536);
-        static constexpr std::size_t index = N >> 11;
-        static constexpr std::size_t size = 65536 / N;
+    template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>> >
+    constexpr T RoundUp(T n) {
+        T clz = 0;
+        if constexpr (sizeof(T) <= 32)
+          clz = __builtin_clzl(n-1);
+        else if (sizeof(T) <= 64)
+          clz = __builtin_clzll(n-1);
+        else
+            static_assert(false);
+
+        return T{1} << (8 * sizeof(T) - clz);
+    }
+
+    template<std::size_t ClassSize> struct ClassMetadata {
+        // TODO:
+        static constexpr uint64_t page_size = 65536;
+
+        static constexpr uint64_t class_size = ClassSize;
+        static_assert(class_size <= 1024);
+        static_assert((class_size & (class_size - 1)) == 0);
+
+        static constexpr uint64_t chunk_size = 64 * class_size;
+        static constexpr uint64_t index = chunk_size >> 11;
+
+        static constexpr uint64_t chunk_count = page_size / chunk_size;
+        static_assert((chunk_count & (chunk_count - 1)) == 0);
+
+        static constexpr uint64_t class_count = chunk_size / class_size;
+        static_assert((class_count & (class_count - 1)) == 0);
+
+        static constexpr uint64_t class_count_mask = 64 - 1; //(uint64_t(1) << (class_count - 1)) - 1;
     };
 
-    template<typename T> struct PoolAllocatorState {
-        using ChunkSize = PageChunkSize<1024>;
+    template<typename T> using ClassMetadataType = ClassMetadata< RoundUp(std::max(sizeof(T), sizeof(uint64_t) * 2)) >;
 
+    template<typename T> struct PoolAllocatorState {
         uintptr_t chunk_ptr;
         bitmap<64>* chunk_elements_bitmap;
 
@@ -372,13 +398,13 @@ namespace containers {
 
         // Single-threaded
         template<typename T> T* allocate(PoolAllocatorState<T>& state) {
-            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+            using meta = ClassMetadataType<T>;
         again:
             auto* bitmap = state.chunk_elements_bitmap;
             auto index = bitmap->ffz();
-            if (__likely__(index < bitmap->size())) {
+            if (__likely__(index < meta::class_count)) {
                 bitmap->set_bit(index);
-                T* p = (T*)(state.chunk_ptr + 16 * index);
+                T* p = (T*)(state.chunk_ptr + meta::class_size * index);
 
                 __debug__("allocate() %p group %lu page %lu chunk %lu index %lu\n",
                     p, state.group, state.page, state.chunk, index);
@@ -388,7 +414,7 @@ namespace containers {
                 // Skip zero group as that is full by definition
                 if (__likely__(state.group > 0)) {
                     auto& descriptor = (*page_group_descriptors_)[state.group];
-                    descriptor.page_live_chunks_bitmaps[ChunkSize::index].clear_bit(state.page * 64 + state.chunk);
+                    descriptor.page_live_chunks_bitmaps[meta::index].clear_bit(state.page * meta::chunk_count + state.chunk);
 
                     // Try to find usable chunk in current page
                     if (__likely__(allocate_update_chunk(state)))
@@ -410,20 +436,21 @@ namespace containers {
 
         // Single-threaded, page is used by owning thread only
         template<typename T> bool allocate_update_chunk(PoolAllocatorState<T>& state) {
-            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+            using meta = ClassMetadataType<T>;
+
             uintptr_t dist = (state.chunk_ptr - (uintptr_t)page_groups_);
             auto group = dist/PageGroupSize;
-            auto page = dist/PageSize & 63;
+            auto page = dist/PageSize & (meta::chunk_count - 1);
 
             __stats__(++stats_->allocate_update_chunk[1];);
 
             auto& descriptor = (*page_group_descriptors_)[group];
             auto& chunk_bitmap = descriptor.page_chunk_bitmaps[page];
             auto chunk = chunk_bitmap.ffz();
-            if (__likely__(chunk < chunk_bitmap.size())) {
+            if (__likely__(chunk < meta::chunk_count)) {
                 __stats__(++stats_->allocate_update_chunk[0];);
                 chunk_bitmap.set_bit(chunk);
-                descriptor.page_live_chunks_bitmaps[ChunkSize::index].set_bit(page * 64 + chunk);
+                descriptor.page_live_chunks_bitmaps[meta::index].set_bit(page * meta::chunk_count + chunk);
                 setup_allocator_state(state, group, page, chunk);
                 return true;
             } else {
@@ -434,22 +461,23 @@ namespace containers {
         // Multi-threaded
         // TODO: handle races, need a while()
         template<typename T> bool allocate_update_page(PoolAllocatorState<T>& state, uint64_t group) {
-            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+            using meta = ClassMetadataType<T>;
 
             // Try current group first
             auto& descriptor = (*page_group_descriptors_)[group];
 
             // Look for an used page with a chunk that can be reused by this size
-            auto& page_size_bitmap = descriptor.page_size_bitmaps[ChunkSize::index];
+            auto& page_size_bitmap = descriptor.page_size_bitmaps[meta::index];
             auto page_size_value = page_size_bitmap.get();
 
             __stats__(++stats_->allocate_update_page;);
 
-            const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[ChunkSize::index];
+            const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[meta::index];
             for (uint64_t page = 0; page < live_chunks_bitmap.size64(); ++page) {
                 auto chunk = _tzcnt_u64(live_chunks_bitmap.get64(page));
-                if (chunk < 64) {
-                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != (uint64_t)-1);
+                if (chunk < meta::chunk_count) {
+                    // TODO
+                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != -1);
                     setup_allocator_state(state, group, page, chunk);
                     return true;
                 }
@@ -481,8 +509,8 @@ namespace containers {
                     descriptor.page_chunk_bitmaps[page].set_bit(chunk);
 
                     // This chunk is not live
-                    assert(descriptor.page_live_chunks_bitmaps[ChunkSize::index].get_bit(page * 64 + chunk) == 0);
-                    descriptor.page_live_chunks_bitmaps[ChunkSize::index].set_bit(page * 64 + chunk);
+                    assert(descriptor.page_live_chunks_bitmaps[meta::index].get_bit(page * meta::chunk_count + chunk) == 0);
+                    descriptor.page_live_chunks_bitmaps[meta::index].set_bit(page * meta::chunk_count + chunk);
                     setup_allocator_state(state, state.group, page, chunk);
                     return true;
                 }
@@ -497,13 +525,14 @@ namespace containers {
                     // __stats__(++stats_->allocate_update_page_used_chunk_iteration;);
 
                     assert(descriptor.page_chunk_bitmaps[page].get_bit(chunk) == 1);
+                    // TODO:
                     if (descriptor.page_chunk_elements_bitmaps[page][chunk].get() != (uint64_t)-1) {
                         __stats__(
                             ++stats_->allocate_update_page_used_chunk;
                             ++stats_->allocate_update_page_used_page;
                         );
 
-                        assert(descriptor.page_live_chunks_bitmaps[ChunkSize::index].get_bit(page * 64 + chunk) == 1);
+                        assert(descriptor.page_live_chunks_bitmaps[meta::index].get_bit(page * meta::chunk_count + chunk) == 1);
                         // This chunk is live by definition
                         // descriptor.page_live_chunks_bitmaps[ChunkSize::index].get_bit(page * 64 + chunk);
                         setup_allocator_state(state, state.group, page, chunk);
@@ -521,9 +550,9 @@ namespace containers {
 
                 assert(descriptor.page_bitmap.get_bit(page) == 0);
                 descriptor.page_bitmap.set_bit(page);
-                descriptor.page_size_bitmaps[ChunkSize::index].set_bit(page);
+                descriptor.page_size_bitmaps[meta::index].set_bit(page);
                 descriptor.page_chunk_bitmaps[page].set_bit(0);
-                descriptor.page_live_chunks_bitmaps[ChunkSize::index].set_bit(page * 64 + 0);
+                descriptor.page_live_chunks_bitmaps[meta::index].set_bit(page * meta::chunk_count + 0);
                 setup_allocator_state(state, state.group, page, 0);
                 return true;
             }
@@ -532,7 +561,7 @@ namespace containers {
         }
 
         template<typename T> bool allocate_update_group(PoolAllocatorState<T>& state) {
-            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+            using meta = ClassMetadataType<T>;
 
             __stats__(++stats_->allocate_update_group;);
 
@@ -553,9 +582,9 @@ namespace containers {
                 auto& descriptor = (*page_group_descriptors_)[group];
                 descriptor.thread_id = thread_id::get();
                 descriptor.page_bitmap.set_bit(0);
-                descriptor.page_size_bitmaps[ChunkSize::index].set_bit(0);
+                descriptor.page_size_bitmaps[meta::index].set_bit(0);
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
-                descriptor.page_live_chunks_bitmaps[ChunkSize::index].set_bit(0);
+                descriptor.page_live_chunks_bitmaps[meta::index].set_bit(0);
 
                 // TODO: the liveset is somehow abandoned
                 //(*page_group_liveset_).set_bit(group);
@@ -571,9 +600,10 @@ namespace containers {
         }
 
         template<typename T> void setup_allocator_state(PoolAllocatorState<T>& state, uint64_t group, uint64_t page, uint64_t chunk) {
+            using meta = ClassMetadataType<T>;
             assert(group > 0);
             auto& descriptor = (*page_group_descriptors_)[group];
-            state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * 1024;
+            state.chunk_ptr = (uintptr_t)&(*page_groups_)[group][page] + chunk * meta::chunk_size;
             state.chunk_elements_bitmap = &descriptor.page_chunk_elements_bitmaps[page][chunk];
             state.page = page;
             state.chunk = chunk;
@@ -589,16 +619,16 @@ namespace containers {
         }
 
         template<typename T> void deallocate(PoolAllocatorState<T>& state, T* ptr) {
-            using ChunkSize = typename PoolAllocatorState<T>::ChunkSize;
+            using meta = ClassMetadataType<T>;
 
             // TODO: this is stupid
             uintptr_t address = (uintptr_t)ptr;
             auto group = (address - (uintptr_t)page_groups_) / PageGroupSize;
             assert(group > 0);
             auto page = (address - (uintptr_t)&(*page_groups_)[group]) / PageSize;
-            auto chunk = (address - (uintptr_t)&(*page_groups_)[group][page]) / 1024;
+            auto chunk = (address - (uintptr_t)&(*page_groups_)[group][page]) / meta::chunk_size;
             // TODO: hardcodes 16bytes
-            auto index = (address - ((uint64_t)&(*page_groups_)[group][page] + chunk * 1024)) / 16;
+            auto index = (address - ((uint64_t)&(*page_groups_)[group][page] + chunk * meta::chunk_size)) / meta::class_size;
 
             __debug__("deallocate() %p group %lu page %lu chunk %lu index %lu\n",
                 ptr, group, page, chunk, index);
@@ -611,18 +641,18 @@ namespace containers {
                 assert(elements_bitmap.get_bit(index));
                 elements_bitmap.clear_bit(index);
 
-                if (elements_count == 64) {
+                if (elements_count == meta::class_count) {
                     // This is first deallocation to fully allocated chunk
-                    descriptor.page_live_chunks_bitmaps[ChunkSize::index].set_bit(page * 64 + chunk);
+                    descriptor.page_live_chunks_bitmaps[meta::index].set_bit(page * meta::chunk_count + chunk);
                 } else if (elements_count == 1) {
                     // This is last deallocation to now empty chunk
                     descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
-                    descriptor.page_live_chunks_bitmaps[ChunkSize::index].clear_bit(page * 64 + chunk);
+                    descriptor.page_live_chunks_bitmaps[meta::index].clear_bit(page * meta::chunk_count + chunk);
 
                     if (descriptor.page_chunk_bitmaps[page].get() == 0) {
                         // Page is completely empty
                         descriptor.page_bitmap.clear_bit(page);
-                        descriptor.page_size_bitmaps[ChunkSize::index].clear_bit(page);
+                        descriptor.page_size_bitmaps[meta::index].clear_bit(page);
 
                         if (state.group != group) {
                             protect_group(group, PROT_NONE);
