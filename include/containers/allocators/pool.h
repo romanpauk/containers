@@ -661,11 +661,14 @@ namespace containers {
 
     template<std::size_t Size> bitmap<64> PageGroupManager<Size>::default_bitmap_(-1);
 
+    // TODO: this in an ugly way assumes there is just one GlobalPageGroupManager instance
+    // at each time as they would share the state_ otherwise...
     template<std::size_t Size> struct GlobalPageGroupManager: PageGroupManager<Size> {
         GlobalPageGroupManager(PageGroupManagerStats* stats = nullptr)
             : PageGroupManager<Size>(stats)
-            , state_(PageGroupManager<Size>::init_allocator_state())
-        {}
+        {
+            state_ = PageGroupManager<Size>::init_allocator_state();
+        }
 
         template<typename Metadata> void* allocate() {
             return PageGroupManager<Size>::template allocate<Metadata>(state_);
@@ -676,8 +679,10 @@ namespace containers {
         }
 
     private:
-        PoolAllocatorState state_;
+        static thread_local PoolAllocatorState state_;
     };
+
+    template<std::size_t Size> thread_local PoolAllocatorState GlobalPageGroupManager<Size>::state_;
 
     template<typename T, typename PageGroupManagerT> struct pool_allocator {
         pool_allocator(PageGroupManagerT& manager)
