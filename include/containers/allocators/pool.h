@@ -20,11 +20,21 @@
 #define __likely__(cond) __builtin_expect((cond), true)
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
-#define DEBUG
+// #define DEBUG
 // #define STATS
 
+constexpr const char* basefilename(const char* path) {
+    const char* file = path;
+    while (*path) {
+        if (*path++ == '/') {
+            file = path;
+        }
+    }
+    return file;
+}
+
 #if defined(DEBUG)
-#define __debug__(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#define __debug__(...) do { fprintf(stderr, "%s: %d: ", basefilename(__FILE__), __LINE__); fprintf(stderr, __VA_ARGS__); } while(0)
 #else
 #define __debug__(...)
 #endif
@@ -418,6 +428,7 @@ namespace containers {
                 // Skip zero group as that is full by definition
                 if (__likely__(state.group > 0)) {
                     auto& descriptor = (*page_group_descriptors_)[state.group];
+                    __debug__("clear bit page %lu chunk %lu\n", state.page, state.chunk);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].clear_bit(state.page * Metadata::chunk_count + state.chunk);
 
                     // Try to find usable chunk in current page
@@ -452,6 +463,7 @@ namespace containers {
             if (__likely__(chunk < Metadata::chunk_count)) {
                 __stats__(++stats_->allocate_update_chunk[0];);
                 chunk_bitmap.set_bit(chunk);
+                __debug__("set bit page %lu chunk %lu\n", page, chunk);
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + chunk);
                 setup_allocator_state<Metadata>(state, group, page, chunk);
 
@@ -477,10 +489,14 @@ namespace containers {
             __stats__(++stats_->allocate_update_page;);
 
             const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[Metadata::index];
-            for (uint64_t page = 0; page < live_chunks_bitmap.size64(); ++page) {
-                auto chunk = _tzcnt_u64(live_chunks_bitmap.get64(page));
-                if (chunk < Metadata::chunk_count) {
-                    // TODO
+            for (uint64_t i = 0; i < live_chunks_bitmap.size64(); ++i) {
+                auto bit = _tzcnt_u64(live_chunks_bitmap.get64(i));
+                if (bit < 64) {   // Note: we really iterate 64bit values here
+                    bit += i * 64;
+                    auto page = bit / Metadata::chunk_count;
+                    auto chunk = bit % Metadata::chunk_count;
+                    __debug__("checking page %lu, chunk %lu, bit %lu\n", page, chunk, bit);
+                    assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
                     assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != -1);
                     setup_allocator_state<Metadata>(state, group, page, chunk);
                     return true;
@@ -514,6 +530,7 @@ namespace containers {
 
                     // This chunk is not live
                     assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 0);
+                    __debug__("clear bit %lu\n", chunk);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + chunk);
                     setup_allocator_state<Metadata>(state, state.group, page, chunk);
                     return true;
@@ -536,9 +553,8 @@ namespace containers {
                             ++stats_->allocate_update_page_used_page;
                         );
 
-                        assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
                         // This chunk is live by definition
-                        // descriptor.page_live_chunks_bitmaps[ChunkSize::index].get_bit(page * 64 + chunk);
+                        assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
                         setup_allocator_state<Metadata>(state, state.group, page, chunk);
                         return true;
                     }
@@ -556,6 +572,7 @@ namespace containers {
                 descriptor.page_bitmap.set_bit(page);
                 descriptor.page_size_bitmaps[Metadata::index].set_bit(page);
                 descriptor.page_chunk_bitmaps[page].set_bit(0);
+                __debug__("set bit page %lu chunk 0\n", page);
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + 0);
                 setup_allocator_state<Metadata>(state, state.group, page, 0);
                 return true;
@@ -586,6 +603,7 @@ namespace containers {
                 descriptor.page_bitmap.set_bit(0);
                 descriptor.page_size_bitmaps[Metadata::index].set_bit(0);
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
+                __debug__("set bit page 0 chunk 0\n", 0);
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(0);
 
                 // TODO: the liveset is somehow abandoned
@@ -635,35 +653,47 @@ namespace containers {
             // TODO: hardcodes 16bytes
             auto index = (address - ((uint64_t)&(*page_groups_)[group][page] + chunk * Metadata::chunk_size)) / Metadata::class_size;
 
-            __debug__("deallocate() %p group %lu page %lu chunk %lu index %lu\n",
-                ptr, group, page, chunk, index);
-
             auto& descriptor = (*page_group_descriptors_)[group];
             if (descriptor.thread_id == thread_id::get()) {
                 auto& elements_bitmap = descriptor.page_chunk_elements_bitmaps[page][chunk];
                 auto elements_count = elements_bitmap.popcnt();
 
+                __debug__("deallocate() %p group %lu page %lu chunk %lu index %lu elements %lu\n",
+                    ptr, group, page, chunk, index, elements_count);
+
                 assert(elements_bitmap.get_bit(index));
                 elements_bitmap.clear_bit(index);
 
                 if (elements_count == Metadata::class_count) {
-                    // This is first deallocation to fully allocated chunk
-                    assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 0);
+                    // This is a first deallocation to fully allocated chunk
+                    //
+                    // Note: the chunk can be still live if there was not an allocation that would fail and remove it from live chunks
+                    //assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 0);
+                    __debug__("set bit page %lu chunk %lu\n", page, chunk);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + chunk);
                 } else if (elements_count == 1) {
                     // This is last deallocation to now empty chunk
+                    if (descriptor.page_chunk_bitmaps[page].popcnt() == 1 && state.group == group) {
+                        // This is deallocation of last chunk in cached page, bail out
+                        return;
+                    }
+
                     descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
                     assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
+                    __debug__("clear bit page %lu chunk %lu\n", page, chunk);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].clear_bit(page * Metadata::chunk_count + chunk);
 
                     if (descriptor.page_chunk_bitmaps[page].get() == 0) {
                         // Page is completely empty
+
+                        // TODO: assert that all that should be empty is
+                        // assert(descriptor.page_live_chunks_bitmaps[Metadata::index].popcnt() == 0);
+
                         descriptor.page_bitmap.clear_bit(page);
                         descriptor.page_size_bitmaps[Metadata::index].clear_bit(page);
 
-                        if (state.group != group) {
-                            protect_group(group, PROT_NONE);
-                        }
+                        assert(group != state.group);
+                        protect_group(group, PROT_NONE);
                     }
                 }
             } else {
