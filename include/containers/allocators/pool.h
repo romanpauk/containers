@@ -745,8 +745,17 @@ namespace containers {
     };
 
     template<typename T, typename PageGroupManagerT> struct pool_allocator {
+        template <typename U1, typename U2, typename PageGroupManagerU>
+        friend bool operator == (pool_allocator<U1, PageGroupManagerU> const&, pool_allocator<U2, PageGroupManagerU> const&) noexcept;
+
+        using value_type = T;
+
         pool_allocator(PageGroupManagerT& manager)
             : manager_(manager)
+        {}
+
+        template <class U> pool_allocator(pool_allocator<U, PageGroupManagerT> const& other) noexcept
+            : manager_(other.manager_)
         {}
 
         T* allocate(std::size_t n) {
@@ -761,5 +770,16 @@ namespace containers {
 
         PageGroupManagerT& manager_;
     };
+
+    template <typename T, typename U, typename PageGroupManagerT>
+    bool operator == (pool_allocator<T, PageGroupManagerT> const& lhs, pool_allocator<U, PageGroupManagerT> const& rhs) noexcept {
+        // TODO: for global manager, this is always true
+        return &lhs.manager_ = &rhs.manager_;
+    }
+
+    template <typename T, typename U, typename PageGroupManagerT>
+    bool operator != (pool_allocator<T, PageGroupManagerT> const& x, pool_allocator<U, PageGroupManagerT> const& y) noexcept {
+        return !(x == y);
+    }
 }
 
