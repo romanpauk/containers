@@ -20,7 +20,7 @@
 #define __likely__(cond) __builtin_expect((cond), true)
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
-// #define DEBUG
+#define DEBUG
 // #define STATS
 
 constexpr const char* basefilename(const char* path) {
@@ -490,14 +490,14 @@ namespace containers {
 
             const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[Metadata::index];
             for (uint64_t i = 0; i < live_chunks_bitmap.size64(); ++i) {
-                auto bit = _tzcnt_u64(live_chunks_bitmap.get64(i));
+                auto bit = (uint64_t)_tzcnt_u64(live_chunks_bitmap.get64(i));
                 if (bit < 64) {   // Note: we really iterate 64bit values here
                     bit += i * 64;
                     auto page = bit / Metadata::chunk_count;
                     auto chunk = bit % Metadata::chunk_count;
                     __debug__("checking page %lu, chunk %lu, bit %lu\n", page, chunk, bit);
                     assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
-                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != -1);
+                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != (uint64_t)-1);
                     setup_allocator_state<Metadata>(state, group, page, chunk);
                     return true;
                 }
@@ -603,7 +603,7 @@ namespace containers {
                 descriptor.page_bitmap.set_bit(0);
                 descriptor.page_size_bitmaps[Metadata::index].set_bit(0);
                 descriptor.page_chunk_bitmaps[0].set_bit(0);
-                __debug__("set bit page 0 chunk 0\n", 0);
+                __debug__("set bit page 0 chunk 0\n");
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(0);
 
                 // TODO: the liveset is somehow abandoned
@@ -708,7 +708,7 @@ namespace containers {
     template<std::size_t Size> struct GlobalPageGroupManager {
         static constexpr uint64_t PageGroupSize = PageGroupManager<Size>::PageGroupSize;
 
-        GlobalPageGroupManager(PageGroupManagerStats* stats = nullptr) {}
+        GlobalPageGroupManager(PageGroupManagerStats* = nullptr) {}
 
         template<typename Metadata> void* allocate() {
             return manager_.template allocate<Metadata>(state_);
