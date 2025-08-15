@@ -20,7 +20,7 @@
 #define __likely__(cond) __builtin_expect((cond), true)
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
-// #define DEBUG
+#define DEBUG
 // #define STATS
 
 #if defined(DEBUG)
@@ -648,10 +648,12 @@ namespace containers {
 
                 if (elements_count == Metadata::class_count) {
                     // This is first deallocation to fully allocated chunk
+                    assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 0);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(page * Metadata::chunk_count + chunk);
                 } else if (elements_count == 1) {
                     // This is last deallocation to now empty chunk
                     descriptor.page_chunk_bitmaps[page].clear_bit(chunk);
+                    assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].clear_bit(page * Metadata::chunk_count + chunk);
 
                     if (descriptor.page_chunk_bitmaps[page].get() == 0) {
@@ -666,6 +668,7 @@ namespace containers {
                 }
             } else {
                 // TODO: non-owning thread path
+                std::abort();
             }
         }
     };

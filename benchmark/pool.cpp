@@ -147,7 +147,7 @@ template<typename T> static void allocator_allocate_rnd(benchmark::State& state)
     state.SetBytesProcessed(state.iterations() * state.range());
 }
 
-using T = uint64_t; //std::array<uint64_t, 16>;
+using T = std::array<uint64_t, 16>;
 
 BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);
