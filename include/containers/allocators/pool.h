@@ -53,7 +53,7 @@ namespace containers {
 
         bitmap() = default;
 
-        bitmap(uint64_t value): values_{value}  {}
+        bitmap(uint64_t value)  { set(value); }
 
         void set(uint64_t v) {
             for(auto& value: values_)
@@ -106,6 +106,17 @@ namespace containers {
             return cnt;
         }
 
+        uint64_t ffz64(uint64_t n) const {
+            uint64_t cnt = n * 64;
+            for(std::size_t i = n; i < values_.size(); ++i) {
+                auto tmp = _tzcnt_u64(~values_[i]);
+                cnt += tmp;
+                if (tmp < sizeof(T) * 8)
+                    break;
+            }
+
+            return cnt;
+        }
         static constexpr std::size_t size() { return N; }
 
         static constexpr std::size_t size64() { return N / sizeof(T); }
@@ -794,5 +805,83 @@ namespace containers {
     bool operator != (pool_allocator<T, PageGroupManagerT> const& x, pool_allocator<U, PageGroupManagerT> const& y) noexcept {
         return !(x == y);
     }
+
+    template<typename T, std::size_t Size = 1ull << 32 > struct bump_allocator {
+        static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), 2 * sizeof(uint64_t)));
+        static constexpr std::size_t Capacity = Size / ClassSize;
+
+        bitmap<Capacity>* bitmap_;
+        bitmap<Capacity/64>* bitmap1_;
+        bitmap<Capacity/64/64>* bitmap2_;
+
+        std::array< std::array<uint8_t, ClassSize * 64>, Size / ClassSize / 64 >* area_;
+
+        bump_allocator() {
+            size_ = 2 * Size;
+            memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            base_ = (T*)(((uint64_t)memory_ + Size - 1) & ~(Size - 1));
+
+            bitmap_ = new bitmap<Capacity>(0);
+            bitmap1_ = new bitmap<Capacity/64>(0);
+            bitmap2_ = new bitmap<Capacity/64/64>(0);
+        }
+
+        ~bump_allocator() {
+            munmap(memory_, size_);
+            delete bitmap_;
+            delete bitmap1_;
+            delete bitmap2_;
+        }
+
+        T* allocate(std::size_t) {
+            //auto i = bitmap2_->ffz64(0);
+            auto j = bitmap1_->ffz();
+            auto index = bitmap_->ffz64(j);
+            bitmap_->set_bit(index);
+            if (bitmap_->get64(index/64) == -1) {
+                bitmap1_->set_bit(index/64);
+            }
+            /*
+            if (bitmap_->get64(index/64) == -1) {
+                bitmap1_->set_bit(index/64);
+                if (bitmap1_->get64(index/64/64) == -1)
+                    bitmap2_->set_bit(index/64/64);
+            }
+            */
+
+            //bitmap1_->set_bit(index/64);
+            //bitmap2_->set_bit(index/64/64);
+
+            T* p = base_ + index;
+            assert(get_index(p) == index);
+            return p;
+        }
+
+        void deallocate(T* p, std::size_t) {
+            auto index = get_index(p);
+            bitmap_->clear_bit(index);
+            if (bitmap_->get64(index/64) == 0) {
+                bitmap1_->clear_bit(index/64);
+            }
+            /*
+            if (bitmap_->get64(index/64) == 0) {
+                bitmap1_->clear_bit(index/64);
+                if (bitmap1_->get64(index/64/64) == 0) {
+                    bitmap2_->clear_bit(index/64/64);
+                }
+            }*/
+        }
+
+        uint64_t get_index(T* ptr) {
+            return ((uint64_t)ptr & (Size - 1)) / sizeof(T);
+        }
+
+    private:
+        void* memory_;
+        std::size_t size_ = 0;
+
+        T* base_;
+        std::size_t counter_ = 0;
+    };
 }
 

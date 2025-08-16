@@ -46,6 +46,26 @@ template<typename T> static void pool_allocator_allocate_seq(benchmark::State& s
     // std::cerr << stats << std::endl;
 }
 
+template<typename T> static void bump_allocator_allocate_seq(benchmark::State& state) {
+    containers::bump_allocator<T> allocator;
+
+    std::vector<T*> ptrs(state.range());
+
+    for (auto _ : state) {
+        for (int i = 0; i < state.range(); ++i) {
+            ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = get<T>();
+        }
+
+        for (int i = 0; i < state.range(); ++i) {
+            allocator.deallocate(ptrs[i], 1);
+        }
+    }
+
+    state.SetBytesProcessed(state.iterations() * state.range());
+    // std::cerr << stats << std::endl;
+}
+
 template<typename T> static void pool_allocator_allocate_rnd(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
     containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
@@ -175,6 +195,8 @@ template<typename T> static void allocator_allocate_set(benchmark::State& state)
 }
 
 using T = std::array<uint64_t, 1>;
+
+BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
 
 BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);

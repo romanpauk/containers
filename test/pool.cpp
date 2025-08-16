@@ -43,6 +43,17 @@ TEST(bitmap, tzcnt) {
     ASSERT_EQ(bitmap.tzcnt(), 0);
 }
 
+TEST(bitmap_large, tzcnt) {
+    containers::bitmap<1024> bitmap(0);
+    for (std::size_t i = 0; i < bitmap.size(); ++i) {
+        ASSERT_EQ(bitmap.get_bit(i), 0);
+        ASSERT_EQ(bitmap.ffz(), i);
+        ASSERT_EQ(bitmap.popcnt(), i);
+        bitmap.set_bit(i);
+        ASSERT_EQ(bitmap.get_bit(i), 1);
+    }
+}
+
 TEST(bitmap, ffz) {
     containers::bitmap<64> bitmap(0);
     ASSERT_EQ(bitmap.ffz(), 0);
