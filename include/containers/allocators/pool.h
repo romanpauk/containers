@@ -20,8 +20,10 @@
 #define __likely__(cond) __builtin_expect((cond), true)
 #define __unlikely__(cond) __builtin_expect((cond), false)
 
-#define DEBUG
+// #define DEBUG
 // #define STATS
+
+#define PROT // Memory protection
 
 constexpr const char* basefilename(const char* path) {
     const char* file = path;
@@ -273,6 +275,7 @@ namespace containers {
     //
 
     struct PageGroupDescriptor {
+        static constexpr std::size_t N = 14;
         //
         // TODO: will need some page state:
         //  thread id, live/dead etc.
@@ -281,11 +284,11 @@ namespace containers {
 
         uint64_t state;
         bitmap<64> page_bitmap;
-        std::array<bitmap<64>, 7> page_size_bitmaps;
+        std::array<bitmap<64>, N> page_size_bitmaps;
 
         // TODO: need a really quick way to find free chunk in the whole group
         // for random access benchmarks
-        std::array<bitmap<64*64>, 7> page_live_chunks_bitmaps;
+        std::array<bitmap<64*64>, N> page_live_chunks_bitmaps;
 
         std::array<bitmap<64>, 64> page_chunk_bitmaps;
         std::array<std::array<bitmap<64>, 64>, 64> page_chunk_elements_bitmaps;
@@ -370,7 +373,11 @@ namespace containers {
             builder.add<PageGroups, PageGroupSize>();
 
             memory_size_ = builder.size();
+        #if defined(PROT)
             memory_ = mmap(0, memory_size_, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        #else
+            memory_ = mmap(0, memory_size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        #endif
 
             memory_buffer_allocator allocator(memory_, memory_size_);
             page_group_descriptors_ = allocator.allocate<PageGroupDescriptors>();
@@ -378,8 +385,10 @@ namespace containers {
             page_group_deadset_ = allocator.allocate<PageGroupDeadset, 4096>();
             page_groups_ = allocator.allocate<PageGroups, PageGroupSize>();
 
+        #if defined(PROT)
             protect(page_group_descriptors_, sizeof(PageGroupDescriptors), PROT_READ | PROT_WRITE);
             protect(page_group_liveset_, sizeof(PageGroupLiveset), PROT_READ | PROT_WRITE);
+        #endif
 
             allocate_group_zero();
         }
@@ -398,17 +407,21 @@ namespace containers {
         }
 
         void protect_group(uint64_t group, int prot) {
+        #if defined(PROT)
             protect(&(*page_groups_)[group], PageGroupSize, prot);
             if ((prot & PROT_READ) || (prot & PROT_WRITE))
                 madvise(&(*page_groups_)[group], PageGroupSize, MADV_WILLNEED);
             if (prot == PROT_NONE)
                 madvise(&(*page_groups_)[group], PageGroupSize, MADV_DONTNEED);
+        #endif
         }
 
         void protect(void* ptr, std::size_t size, int prot) {
+        #if defined(PROT)
             if (mprotect(ptr, size, prot) != 0) {
                 std::abort();
             }
+        #endif
         }
 
         // Single-threaded
