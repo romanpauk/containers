@@ -10,7 +10,7 @@
 #include <benchmark/benchmark.h>
 #include <random>
 
-const std::size_t N = 1<<26;
+const std::size_t N = 1<<28;
 
 /* The state must be initialized to non-zero */
 // https://en.wikipedia.org/wiki/Xorshift
@@ -43,7 +43,7 @@ template<typename T> static void pool_allocator_allocate_seq(benchmark::State& s
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());
-    // std::cerr << stats << std::endl;
+    __stats__(std::cerr << stats << std::endl;);
 }
 
 template<typename T> static void bump_allocator_allocate_seq(benchmark::State& state) {
@@ -63,7 +63,6 @@ template<typename T> static void bump_allocator_allocate_seq(benchmark::State& s
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());
-    // std::cerr << stats << std::endl;
 }
 
 template<typename T> static void pool_allocator_allocate_rnd(benchmark::State& state) {
@@ -196,7 +195,7 @@ template<typename T> static void allocator_allocate_set(benchmark::State& state)
 
 using T = std::array<uint64_t, 1>;
 
-BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
+//BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
 
 BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);

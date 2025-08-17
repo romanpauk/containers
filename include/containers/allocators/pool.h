@@ -23,7 +23,7 @@
 // #define DEBUG
 // #define STATS
 
-#define PROT // Memory protection
+// #define PROT // Memory protection
 
 constexpr const char* basefilename(const char* path) {
     const char* file = path;
@@ -324,6 +324,7 @@ namespace containers {
         uint64_t allocate_update_page_free_page = 0;
         uint64_t allocate_update_page_full_page = 0;
         uint64_t allocate_update_group = 0;
+        uint64_t allocate_update_group_full_group = 0;
         uint64_t allocate_update_group_used_group = 0;
         uint64_t allocate_update_group_new_group = 0;
     };
@@ -339,6 +340,7 @@ namespace containers {
             << " full page " << (double)stats.allocate_update_page_full_page / stats.allocate_update_page << " (" << stats.allocate_update_page_full_page << ")"
             << " used group " << (double)stats.allocate_update_group_used_group / (stats.allocate_update_group + 1) << " (" << stats.allocate_update_group_used_group << ")"
             << " new group " << (double)stats.allocate_update_group_new_group / (stats.allocate_update_group + 1) << " (" << stats.allocate_update_group_new_group << ")"
+            << " full group " << (double)stats.allocate_update_group_full_group
             ;
     }
 
@@ -608,16 +610,23 @@ namespace containers {
         template<typename Metadata> bool allocate_update_group(PoolAllocatorState& state) {
             __stats__(++stats_->allocate_update_group;);
 
-            for (std::size_t group = 1; group < PageGroupCount; ++group) {
-                // TODO: pages are never removed from live-set
-                // TODO: descriptor.thread_id is never reset
-                if (!page_group_liveset_->get_bit(group))
-                    break;
+            for (std::size_t i = 1; i < page_group_liveset_->size64(); ++i) {
+                uint64_t value = page_group_liveset_->get64(i);
+                while(value) {
+                    uint64_t tmp = value & -value;
+                    uint64_t group = i * 64 + __builtin_ctzl(value);
+                    value ^= tmp;
 
-                if (allocate_update_page<Metadata>(state, group)) {
-                    __stats__(++stats_->allocate_update_group_used_group;);
-                    return true;
+                    if (allocate_update_page<Metadata>(state, group)) {
+                        __stats__(++stats_->allocate_update_group_used_group;);
+                        return true;
+                    } else {
+                        __stats__(++stats_->allocate_update_group_full_group;);
+                    }
                 }
+
+                if (i * 64 > page_groups_index_)
+                    break;
             }
 
             if (page_groups_index_ < PageGroupCount) {
@@ -631,7 +640,7 @@ namespace containers {
                 descriptor.page_live_chunks_bitmaps[Metadata::index].set_bit(0);
 
                 // TODO: the liveset is somehow abandoned
-                //(*page_group_liveset_).set_bit(group);
+                (*page_group_liveset_).set_bit(group);
 
                 __stats__(++stats_->allocate_update_group_new_group;);
 
@@ -716,8 +725,11 @@ namespace containers {
                         descriptor.page_bitmap.clear_bit(page);
                         descriptor.page_size_bitmaps[Metadata::index].clear_bit(page);
 
-                        assert(group != state.group);
-                        protect_group(group, PROT_NONE);
+                        if (descriptor.page_bitmap.get() == 0) {
+                            assert(group != state.group);
+                            protect_group(group, PROT_NONE);
+                            page_group_liveset_->clear_bit(group);
+                        }
                     }
                 }
             } else {
