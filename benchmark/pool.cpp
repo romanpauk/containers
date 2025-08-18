@@ -121,7 +121,7 @@ template<typename T> static void pool_allocator_allocate_set(benchmark::State& s
     }
 
     state.SetBytesProcessed(state.iterations() * state.range());
-    // std::cerr << stats << std::endl;
+    __stats__(std::cerr << stats << std::endl;);
 }
 
 template<typename T> static void allocator_allocate_seq(benchmark::State& state) {
@@ -199,9 +199,9 @@ using T = std::array<uint64_t, 1>;
 
 BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);
-//BENCHMARK_TEMPLATE(pool_allocator_allocate_set, uint64_t)->Range(1, N);
+BENCHMARK_TEMPLATE(pool_allocator_allocate_set, uint64_t)->Range(1, N);
 //BENCHMARK(pool_allocator_allocate_global)->Range(1, N);
 BENCHMARK_TEMPLATE(allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(allocator_allocate_rnd, T)->Range(1, N);
-//BENCHMARK_TEMPLATE(allocator_allocate_set, uint64_t)->Range(1, N);
+BENCHMARK_TEMPLATE(allocator_allocate_set, uint64_t)->Range(1, N);
 

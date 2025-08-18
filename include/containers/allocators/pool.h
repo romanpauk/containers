@@ -23,7 +23,7 @@
 // #define DEBUG
 // #define STATS
 
-// #define PROT // Memory protection
+#define PROT // Memory protection
 
 constexpr const char* basefilename(const char* path) {
     const char* file = path;
@@ -508,10 +508,6 @@ namespace containers {
             // Try current group first
             auto& descriptor = (*page_group_descriptors_)[group];
 
-            // Look for an used page with a chunk that can be reused by this size
-            auto& page_size_bitmap = descriptor.page_size_bitmaps[Metadata::index];
-            auto page_size_value = page_size_bitmap.get();
-
             __stats__(++stats_->allocate_update_page;);
 
             const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[Metadata::index];
@@ -528,6 +524,10 @@ namespace containers {
                     return true;
                 }
             }
+
+            // Look for an used page with a free chunk that can be reused by this size
+            auto& page_size_bitmap = descriptor.page_size_bitmaps[Metadata::index];
+            auto page_size_value = page_size_bitmap.get();
 
             // https://lemire.me/blog/2018/02/21/iterating-over-set-bits-quickly/
             while (page_size_value != 0) {
@@ -561,7 +561,10 @@ namespace containers {
                     setup_allocator_state<Metadata>(state, state.group, page, chunk);
                     return true;
                 }
-
+#if 0
+                //
+                // TODO: already iterated in live chunks
+                //
                 // Iterate chunks in use
                 chunk_value = descriptor.page_chunk_bitmaps[page].get();
                 while (chunk_value != 0) {
@@ -585,6 +588,7 @@ namespace containers {
                         return true;
                     }
                 }
+#endif
             }
 
             __stats__(++stats_->allocate_update_page_full_page;);
@@ -609,7 +613,7 @@ namespace containers {
 
         template<typename Metadata> bool allocate_update_group(PoolAllocatorState& state) {
             __stats__(++stats_->allocate_update_group;);
-
+#if 0
             for (std::size_t i = 1; i < page_group_liveset_->size64(); ++i) {
                 uint64_t value = page_group_liveset_->get64(i);
                 while(value) {
@@ -628,7 +632,7 @@ namespace containers {
                 if (i * 64 > page_groups_index_)
                     break;
             }
-
+#endif
             if (page_groups_index_ < PageGroupCount) {
                 auto group = page_groups_index_++;
                 auto& descriptor = (*page_group_descriptors_)[group];
