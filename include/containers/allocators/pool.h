@@ -835,8 +835,11 @@ namespace containers {
     template<typename T, std::size_t Size = 1ull << 32 > struct bump_allocator {
         static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), 2 * sizeof(uint64_t)));
         static constexpr std::size_t Capacity = Size / ClassSize;
+        static constexpr std::size_t PageCapacity = 64;
 
-        bitmap<Capacity>* bitmap_;
+        bitmap<Capacity/PageCapacity>* bitmap_;
+        std::array<bitmap<PageCapacity>, Capacity/PageCapacity>* bitmaps_;
+        uint64_t page_ = 0;
         uint64_t bitmap_low_ = 0;
 
         bump_allocator() {
@@ -844,30 +847,44 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             base_ = ((uint64_t)memory_ + Size - 1) & ~(Size - 1);
 
-            bitmap_ = new bitmap<Capacity>(0);
+            bitmap_ = new bitmap<Capacity/PageCapacity>(0);
+            bitmaps_ = new std::array<bitmap<PageCapacity>, Capacity/PageCapacity>();
         }
 
         ~bump_allocator() {
             munmap(memory_, size_);
+
             delete bitmap_;
+            delete bitmaps_;
         }
 
         T* allocate(std::size_t n) {
             assert(n == 1); (void)n;
 
-            auto index = bitmap_->ffz(bitmap_low_);
-            bitmap_->set_bit(index);
-            bitmap_low_ = index/64;
-
-            T* p = (T*)(base_ + ClassSize * index);
-            assert(get_index(p) == index);
-            return p;
+        again:
+            auto index = (*bitmaps_)[page_].ffz();
+            if (index < bitmap<PageCapacity>::size()) {
+                (*bitmaps_)[page_].set_bit(index);
+                index += page_ * PageCapacity;
+                T* p = (T*)(base_ + ClassSize * index);
+                assert(get_index(p) == index);
+                return p;
+            } else {
+                bitmap_->set_bit(page_);
+                page_ = bitmap_->ffz(bitmap_low_);
+                bitmap_low_ = page_/64;
+                goto again;
+            }
         }
 
         void deallocate(T* p, std::size_t) {
             auto index = get_index(p);
-            bitmap_->clear_bit(index);
-            bitmap_low_ = std::min(index/64, bitmap_low_);
+            (*bitmaps_)[index/PageCapacity].clear_bit(index & (PageCapacity - 1));
+            bitmap_->clear_bit(index/PageCapacity);
+
+            // TODO: this impacts random searching for new page significantly
+            if (bitmap_->get64(index/PageCapacity/64) == 0)
+                bitmap_low_ = std::min(bitmap_low_, index/PageCapacity/64);
         }
 
         uint64_t get_index(void* ptr) {
