@@ -834,7 +834,9 @@ namespace containers {
     }
 
     template<typename T, std::size_t Size = 1ull << 32 > struct bump_allocator {
-        static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), 2 * sizeof(uint64_t)));
+        // Jemalloc returns 8byte aligned memory,
+        // lets do that too, at least in allocator<> where the type is known
+        static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), sizeof(uint64_t)));
         static constexpr std::size_t Capacity = Size / ClassSize;
         static constexpr std::size_t PageCapacity = 64;
 
@@ -845,21 +847,24 @@ namespace containers {
         uint64_t pages_index_low_ = 0;
 
         bump_allocator() {
-            size_ = 2 * Size;
-            memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            base_ = ((uint64_t)memory_ + Size - 1) & ~(Size - 1);
+            memory_buffer_builder builder;
+            builder.add<decltype(*pages_index_)>();
+            builder.add<decltype(*pages_), 4096>();
+            builder.add<decltype(*bitmaps_), 4096>();
+            builder.add<std::array<uint8_t, ClassSize * Capacity>, Size>();
 
-            pages_index_ = new bitmap<Capacity/PageCapacity/64>(0);
-            pages_ = new bitmap<Capacity/PageCapacity>(0);
-            bitmaps_ = new std::array<bitmap<PageCapacity>, Capacity/PageCapacity>();
+            size_ = builder.size();
+            memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+            memory_buffer_allocator allocator(memory_, size_);
+            pages_index_ = allocator.allocate<std::decay_t<decltype(*pages_index_)>>();
+            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
+            bitmaps_ = allocator.allocate<std::decay_t<decltype(*bitmaps_)>, 4096>();
+            base_ = (uint64_t)allocator.allocate<std::array<uint8_t, ClassSize * Capacity>, Size>();
         }
 
         ~bump_allocator() {
             munmap(memory_, size_);
-
-            delete pages_index_;
-            delete pages_;
-            delete bitmaps_;
         }
 
         T* allocate(std::size_t n) {
