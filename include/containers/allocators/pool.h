@@ -837,7 +837,7 @@ namespace containers {
         static constexpr std::size_t Capacity = Size / ClassSize;
         static constexpr std::size_t PageCapacity = 64;
 
-        bitmap<Capacity/PageCapacity>* bitmap_;
+        bitmap<Capacity/PageCapacity>* pages_;
         std::array<bitmap<PageCapacity>, Capacity/PageCapacity>* bitmaps_;
         uint64_t page_ = 0;
         uint64_t bitmap_low_ = 0;
@@ -847,14 +847,14 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             base_ = ((uint64_t)memory_ + Size - 1) & ~(Size - 1);
 
-            bitmap_ = new bitmap<Capacity/PageCapacity>(0);
+            pages_ = new bitmap<Capacity/PageCapacity>(0);
             bitmaps_ = new std::array<bitmap<PageCapacity>, Capacity/PageCapacity>();
         }
 
         ~bump_allocator() {
             munmap(memory_, size_);
 
-            delete bitmap_;
+            delete pages_;
             delete bitmaps_;
         }
 
@@ -870,8 +870,8 @@ namespace containers {
                 assert(get_index(p) == index);
                 return p;
             } else {
-                bitmap_->set_bit(page_);
-                page_ = bitmap_->ffz(bitmap_low_);
+                pages_->set_bit(page_);
+                page_ = pages_->ffz(bitmap_low_);
                 bitmap_low_ = page_/64;
                 goto again;
             }
@@ -880,10 +880,10 @@ namespace containers {
         void deallocate(T* p, std::size_t) {
             auto index = get_index(p);
             (*bitmaps_)[index/PageCapacity].clear_bit(index & (PageCapacity - 1));
-            bitmap_->clear_bit(index/PageCapacity);
+            pages_->clear_bit(index/PageCapacity);
 
             // TODO: this impacts random searching for new page significantly
-            if (bitmap_->get64(index/PageCapacity/64) == 0)
+            if (pages_->get64(index/PageCapacity/64) == 0)
                 bitmap_low_ = std::min(bitmap_low_, index/PageCapacity/64);
         }
 
