@@ -94,9 +94,10 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t ffz(uint64_t n = 0) const {
-            uint64_t cnt = n * 64;
-            for(std::size_t i = n; i < values_.size(); ++i) {
+        uint64_t ffz(uint64_t begin = 0, uint64_t end = -1) const {
+            uint64_t cnt = begin * 64;
+            uint64_t j = std::min(values_.size(), end);
+            for(std::size_t i = begin; i < j; ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
@@ -837,16 +838,18 @@ namespace containers {
         static constexpr std::size_t Capacity = Size / ClassSize;
         static constexpr std::size_t PageCapacity = 64;
 
+        bitmap<Capacity/PageCapacity/64>* pages_index_;
         bitmap<Capacity/PageCapacity>* pages_;
         std::array<bitmap<PageCapacity>, Capacity/PageCapacity>* bitmaps_;
         uint64_t page_ = 0;
-        uint64_t bitmap_low_ = 0;
+        uint64_t pages_index_low_ = 0;
 
         bump_allocator() {
             size_ = 2 * Size;
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             base_ = ((uint64_t)memory_ + Size - 1) & ~(Size - 1);
 
+            pages_index_ = new bitmap<Capacity/PageCapacity/64>(0);
             pages_ = new bitmap<Capacity/PageCapacity>(0);
             bitmaps_ = new std::array<bitmap<PageCapacity>, Capacity/PageCapacity>();
         }
@@ -854,6 +857,7 @@ namespace containers {
         ~bump_allocator() {
             munmap(memory_, size_);
 
+            delete pages_index_;
             delete pages_;
             delete bitmaps_;
         }
@@ -863,7 +867,7 @@ namespace containers {
 
         again:
             auto index = (*bitmaps_)[page_].ffz();
-            if (index < bitmap<PageCapacity>::size()) {
+            if (__likely__(index < bitmap<PageCapacity>::size())) {
                 (*bitmaps_)[page_].set_bit(index);
                 index += page_ * PageCapacity;
                 T* p = (T*)(base_ + ClassSize * index);
@@ -871,8 +875,15 @@ namespace containers {
                 return p;
             } else {
                 pages_->set_bit(page_);
-                page_ = pages_->ffz(bitmap_low_);
-                bitmap_low_ = page_/64;
+
+                if (pages_->get64(page_ / 64) == -1) {
+                    pages_index_->set_bit(page_ / 64);
+                }
+
+                auto id = pages_index_->ffz(pages_index_low_);
+                pages_index_low_ = id / 64;
+                page_ = pages_->ffz(id);
+
                 goto again;
             }
         }
@@ -882,9 +893,10 @@ namespace containers {
             (*bitmaps_)[index/PageCapacity].clear_bit(index & (PageCapacity - 1));
             pages_->clear_bit(index/PageCapacity);
 
-            // TODO: this impacts random searching for new page significantly
-            if (pages_->get64(index/PageCapacity/64) == 0)
-                bitmap_low_ = std::min(bitmap_low_, index/PageCapacity/64);
+            if (pages_index_->get_bit(index/PageCapacity/64) == 1) {
+                pages_index_->clear_bit(index/PageCapacity/64);
+                pages_index_low_ = std::min(pages_index_low_, index/PageCapacity/64/64);
+            }
         }
 
         uint64_t get_index(void* ptr) {
