@@ -23,7 +23,7 @@
 // #define DEBUG
 // #define STATS
 
-#define PROT // Memory protection
+// #define PROT // Memory protection
 
 constexpr const char* basefilename(const char* path) {
     const char* file = path;
@@ -94,9 +94,9 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t ffz() const {
-            uint64_t cnt = 0;
-            for(std::size_t i = 0; i < values_.size(); ++i) {
+        uint64_t ffz(uint64_t n = 0) const {
+            uint64_t cnt = n * 64;
+            for(std::size_t i = n; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
@@ -106,7 +106,7 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t ffz64(uint64_t n) const {
+        uint64_t ffz64(uint64_t n = 0) const {
             uint64_t cnt = n * 64;
             for(std::size_t i = n; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
@@ -507,7 +507,7 @@ namespace containers {
         template<typename Metadata> bool allocate_update_page(PoolAllocatorState& state, uint64_t group) {
             // Try current group first
             auto& descriptor = (*page_group_descriptors_)[group];
-
+#if 1
             __stats__(++stats_->allocate_update_page;);
 
             const auto& live_chunks_bitmap = descriptor.page_live_chunks_bitmaps[Metadata::index];
@@ -524,7 +524,7 @@ namespace containers {
                     return true;
                 }
             }
-
+#endif
             // Look for an used page with a free chunk that can be reused by this size
             auto& page_size_bitmap = descriptor.page_size_bitmaps[Metadata::index];
             auto page_size_value = page_size_bitmap.get();
@@ -613,7 +613,7 @@ namespace containers {
 
         template<typename Metadata> bool allocate_update_group(PoolAllocatorState& state) {
             __stats__(++stats_->allocate_update_group;);
-#if 0
+#if 1
             for (std::size_t i = 1; i < page_group_liveset_->size64(); ++i) {
                 uint64_t value = page_group_liveset_->get64(i);
                 while(value) {
@@ -799,13 +799,23 @@ namespace containers {
         {}
 
         T* allocate(std::size_t n) {
-            assert(n == 1);(void)n;
-            return (T*)manager_.template allocate<ClassMetadataType<T>>();
+            if constexpr (sizeof(T) <= 2048) {
+                if (__likely__(n == 1))
+                    return (T*)manager_.template allocate<ClassMetadataType<T>>();
+            }
+
+            std::allocator<T> alloc;
+            return alloc.allocate(n);
         }
 
         void deallocate(T* ptr, std::size_t n) {
-            assert(n == 1);(void)n;
-            manager_.template deallocate<ClassMetadataType<T>>(ptr);
+            if constexpr (sizeof(T) <= 2048) {
+                if (__likely__(n == 1))
+                    manager_.template deallocate<ClassMetadataType<T>>(ptr);
+            }
+
+            //std::allocator<T> alloc;
+            //return alloc.deallocate(ptr, n);
         }
 
         PageGroupManagerT& manager_;
@@ -827,48 +837,29 @@ namespace containers {
         static constexpr std::size_t Capacity = Size / ClassSize;
 
         bitmap<Capacity>* bitmap_;
-        bitmap<Capacity/64>* bitmap1_;
-        bitmap<Capacity/64/64>* bitmap2_;
-
-        std::array< std::array<uint8_t, ClassSize * 64>, Size / ClassSize / 64 >* area_;
+        uint64_t bitmap_low_ = 0;
 
         bump_allocator() {
             size_ = 2 * Size;
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            base_ = (T*)(((uint64_t)memory_ + Size - 1) & ~(Size - 1));
+            base_ = ((uint64_t)memory_ + Size - 1) & ~(Size - 1);
 
             bitmap_ = new bitmap<Capacity>(0);
-            bitmap1_ = new bitmap<Capacity/64>(0);
-            bitmap2_ = new bitmap<Capacity/64/64>(0);
         }
 
         ~bump_allocator() {
             munmap(memory_, size_);
             delete bitmap_;
-            delete bitmap1_;
-            delete bitmap2_;
         }
 
-        T* allocate(std::size_t) {
-            //auto i = bitmap2_->ffz64(0);
-            auto j = bitmap1_->ffz();
-            auto index = bitmap_->ffz64(j);
+        T* allocate(std::size_t n) {
+            assert(n == 1); (void)n;
+
+            auto index = bitmap_->ffz(bitmap_low_);
             bitmap_->set_bit(index);
-            if (bitmap_->get64(index/64) == -1) {
-                bitmap1_->set_bit(index/64);
-            }
-            /*
-            if (bitmap_->get64(index/64) == -1) {
-                bitmap1_->set_bit(index/64);
-                if (bitmap1_->get64(index/64/64) == -1)
-                    bitmap2_->set_bit(index/64/64);
-            }
-            */
+            bitmap_low_ = index/64;
 
-            //bitmap1_->set_bit(index/64);
-            //bitmap2_->set_bit(index/64/64);
-
-            T* p = base_ + index;
+            T* p = (T*)(base_ + ClassSize * index);
             assert(get_index(p) == index);
             return p;
         }
@@ -876,28 +867,18 @@ namespace containers {
         void deallocate(T* p, std::size_t) {
             auto index = get_index(p);
             bitmap_->clear_bit(index);
-            if (bitmap_->get64(index/64) == 0) {
-                bitmap1_->clear_bit(index/64);
-            }
-            /*
-            if (bitmap_->get64(index/64) == 0) {
-                bitmap1_->clear_bit(index/64);
-                if (bitmap1_->get64(index/64/64) == 0) {
-                    bitmap2_->clear_bit(index/64/64);
-                }
-            }*/
+            bitmap_low_ = std::min(index/64, bitmap_low_);
         }
 
-        uint64_t get_index(T* ptr) {
-            return ((uint64_t)ptr & (Size - 1)) / sizeof(T);
+        uint64_t get_index(void* ptr) {
+            return ((uint64_t)ptr & (Size - 1)) / ClassSize;
         }
 
     private:
         void* memory_;
         std::size_t size_ = 0;
 
-        T* base_;
-        std::size_t counter_ = 0;
+        uint64_t base_;
     };
 }
 

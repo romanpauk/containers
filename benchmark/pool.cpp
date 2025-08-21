@@ -9,6 +9,7 @@
 
 #include <benchmark/benchmark.h>
 #include <random>
+#include <unordered_set>
 
 const std::size_t N = 1<<28;
 
@@ -23,6 +24,65 @@ uint64_t xorshift64(uint64_t& state) {
 }
 
 template<typename T> T get() { return T(); }
+
+template<typename T> static void bump_allocator_allocate_seq(benchmark::State& state) {
+    containers::bump_allocator<T> allocator;
+
+    std::vector<T*> ptrs(state.range());
+
+    for (auto _ : state) {
+        for (int i = 0; i < state.range(); ++i) {
+            ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = get<T>();
+        }
+
+        for (int i = 0; i < state.range(); ++i) {
+            allocator.deallocate(ptrs[i], 1);
+        }
+    }
+
+    state.SetBytesProcessed(state.iterations() * state.range());
+}
+
+template<typename T> static void bump_allocator_allocate_rnd(benchmark::State& state) {
+    containers::bump_allocator<T> allocator;
+
+    std::vector<T*> ptrs(state.range());
+    uint64_t tmp = 12345;
+    uint64_t count = 0;
+    for (int i = 0; i < state.range(); ++i) {
+        auto rnd = xorshift64(tmp);
+        if ((rnd ^ (rnd >> 33)) & 1) {
+            ptrs[i] = allocator.allocate(1);
+            (*ptrs[i]) = get<T>();
+            ++count;
+        }
+    }
+
+    __stats__(std::cerr << "allocation ratio " << (double)count / state.range() << std::endl;);
+
+    auto rng = std::default_random_engine {};
+    std::shuffle(std::begin(ptrs), std::end(ptrs), rng);
+
+    for (auto _ : state) {
+        for (int i = 0; i < state.range(); ++i) {
+            if (ptrs[i]) {
+                allocator.deallocate(ptrs[i], 1);
+                ptrs[i] = 0;
+            } else {
+                ptrs[i] = allocator.allocate(1);
+                (*ptrs[i]) = get<T>();
+            }
+        }
+    }
+
+    for (int i = 0; i < state.range(); ++i) {
+        if (ptrs[i])
+            allocator.deallocate(ptrs[i], 1);
+    }
+
+    state.SetBytesProcessed(state.iterations() * state.range());
+}
 
 template<typename T> static void pool_allocator_allocate_seq(benchmark::State& state) {
     containers::PageGroupManagerStats stats {{0}};
@@ -44,25 +104,6 @@ template<typename T> static void pool_allocator_allocate_seq(benchmark::State& s
 
     state.SetBytesProcessed(state.iterations() * state.range());
     __stats__(std::cerr << stats << std::endl;);
-}
-
-template<typename T> static void bump_allocator_allocate_seq(benchmark::State& state) {
-    containers::bump_allocator<T> allocator;
-
-    std::vector<T*> ptrs(state.range());
-
-    for (auto _ : state) {
-        for (int i = 0; i < state.range(); ++i) {
-            ptrs[i] = allocator.allocate(1);
-            (*ptrs[i]) = get<T>();
-        }
-
-        for (int i = 0; i < state.range(); ++i) {
-            allocator.deallocate(ptrs[i], 1);
-        }
-    }
-
-    state.SetBytesProcessed(state.iterations() * state.range());
 }
 
 template<typename T> static void pool_allocator_allocate_rnd(benchmark::State& state) {
@@ -115,6 +156,22 @@ template<typename T> static void pool_allocator_allocate_set(benchmark::State& s
 
     for (auto _ : state) {
         std::set<T, std::less<T>, decltype(allocator) > set(allocator);
+        for (int i = 0; i < state.range(); ++i) {
+            set.insert(T(i));
+        }
+    }
+
+    state.SetBytesProcessed(state.iterations() * state.range());
+    __stats__(std::cerr << stats << std::endl;);
+}
+
+template<typename T> static void pool_allocator_allocate_unordered_set(benchmark::State& state) {
+    containers::PageGroupManagerStats stats {{0}};
+    containers::LocalPageGroupManager< 1ull<<35 > manager(&stats);
+    containers::pool_allocator<T, decltype(manager) > allocator(manager);
+
+    for (auto _ : state) {
+        std::unordered_set<T, std::hash<T>, std::equal_to<T>, decltype(allocator) > set(allocator);
         for (int i = 0; i < state.range(); ++i) {
             set.insert(T(i));
         }
@@ -195,11 +252,13 @@ template<typename T> static void allocator_allocate_set(benchmark::State& state)
 
 using T = std::array<uint64_t, 1>;
 
-//BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
+BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
+BENCHMARK_TEMPLATE(bump_allocator_allocate_rnd, T)->Range(1, N);
 
 BENCHMARK_TEMPLATE(pool_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_rnd, T)->Range(1, N);
 BENCHMARK_TEMPLATE(pool_allocator_allocate_set, uint64_t)->Range(1, N);
+BENCHMARK_TEMPLATE(pool_allocator_allocate_unordered_set, uint64_t)->Range(1, N);
 //BENCHMARK(pool_allocator_allocate_global)->Range(1, N);
 BENCHMARK_TEMPLATE(allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(allocator_allocate_rnd, T)->Range(1, N);

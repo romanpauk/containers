@@ -79,7 +79,7 @@ if(CONTAINERS_ENABLE_BENCHMARK)
     FetchContent_MakeAvailable(concurrentqueue)
 
     add_executable(containers_benchmark
-        #benchmark/arena_allocator.cpp
+        benchmark/arena_allocator.cpp
         #benchmark/evictable_unordered_map.cpp
         #benchmark/growable_array.cpp
         benchmark/main.cpp
