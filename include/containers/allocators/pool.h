@@ -881,13 +881,14 @@ namespace containers {
             } else {
                 pages_->set_bit(page_);
 
-                if (pages_->get64(page_ / 64) == -1) {
+                if (pages_->get64(page_ / 64) != -1) {
+                    page_ = pages_->ffz(page_ / 64, page_ / 64 + 1);
+                } else {
                     pages_index_->set_bit(page_ / 64);
+                    auto pages_low = pages_index_->ffz(pages_index_low_);
+                    pages_index_low_ = pages_low / 64;
+                    page_ = pages_->ffz(pages_low);
                 }
-
-                auto id = pages_index_->ffz(pages_index_low_);
-                pages_index_low_ = id / 64;
-                page_ = pages_->ffz(id);
 
                 goto again;
             }
