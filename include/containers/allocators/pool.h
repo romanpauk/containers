@@ -838,28 +838,32 @@ namespace containers {
         // lets do that too, at least in allocator<> where the type is known
         static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), sizeof(uint64_t)));
         static constexpr std::size_t Capacity = Size / ClassSize;
-        static constexpr std::size_t PageCapacity = 64;
+        static constexpr std::size_t ChunkCapacity = 64;
+        static constexpr std::size_t ChunkCount = Capacity / ChunkCapacity;
 
-        bitmap<Capacity/PageCapacity/64>* pages_index_;
-        bitmap<Capacity/PageCapacity>* pages_;
-        std::array<bitmap<PageCapacity>, Capacity/PageCapacity>* bitmaps_;
-        uint64_t page_ = 0;
+        static constexpr std::size_t PageCapacity = 64;
+        static constexpr std::size_t PageCount = ChunkCount / PageCapacity;
+
+        bitmap<PageCount>* pages_;
+        bitmap<ChunkCount>* chunks_;
+        std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
+        uint64_t chunk_ = 0;
         uint64_t pages_index_low_ = 0;
 
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*pages_index_)>();
-            builder.add<decltype(*pages_), 4096>();
-            builder.add<decltype(*bitmaps_), 4096>();
+            builder.add<decltype(*pages_)>();
+            builder.add<decltype(*chunks_), 4096>();
+            builder.add<decltype(*chunk_elements_), 4096>();
             builder.add<std::array<uint8_t, ClassSize * Capacity>, Size>();
 
             size_ = builder.size();
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            pages_index_ = allocator.allocate<std::decay_t<decltype(*pages_index_)>>();
-            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
-            bitmaps_ = allocator.allocate<std::decay_t<decltype(*bitmaps_)>, 4096>();
+            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>>();
+            chunks_ = allocator.allocate<std::decay_t<decltype(*chunks_)>, 4096>();
+            chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
             base_ = (uint64_t)allocator.allocate<std::array<uint8_t, ClassSize * Capacity>, Size>();
         }
 
@@ -871,23 +875,23 @@ namespace containers {
             assert(n == 1); (void)n;
 
         again:
-            auto index = (*bitmaps_)[page_].ffz();
-            if (__likely__(index < bitmap<PageCapacity>::size())) {
-                (*bitmaps_)[page_].set_bit(index);
-                index += page_ * PageCapacity;
+            auto index = (*chunk_elements_)[chunk_].ffz();
+            if (__likely__(index < bitmap<ChunkCapacity>::size())) {
+                (*chunk_elements_)[chunk_].set_bit(index);
+                index += chunk_ * ChunkCapacity;
                 T* p = (T*)(base_ + ClassSize * index);
                 assert(get_index(p) == index);
                 return p;
             } else {
-                pages_->set_bit(page_);
+                chunks_->set_bit(chunk_);
 
-                if (pages_->get64(page_ / 64) != -1) {
-                    page_ = pages_->ffz(page_ / 64, page_ / 64 + 1);
+                if (chunks_->get64(chunk_ / 64) != -1) {
+                    chunk_ = chunks_->ffz(chunk_ / 64, chunk_ / 64 + 1);
                 } else {
-                    pages_index_->set_bit(page_ / 64);
-                    auto pages_low = pages_index_->ffz(pages_index_low_);
+                    pages_->set_bit(chunk_ / 64);
+                    auto pages_low = pages_->ffz(pages_index_low_);
                     pages_index_low_ = pages_low / 64;
-                    page_ = pages_->ffz(pages_low);
+                    chunk_ = chunks_->ffz(pages_low);
                 }
 
                 goto again;
@@ -896,12 +900,14 @@ namespace containers {
 
         void deallocate(T* p, std::size_t) {
             auto index = get_index(p);
-            (*bitmaps_)[index/PageCapacity].clear_bit(index & (PageCapacity - 1));
-            pages_->clear_bit(index/PageCapacity);
+            auto chunk = index/ChunkCapacity;
+            auto element = index & (ChunkCapacity - 1);
+            (*chunk_elements_)[chunk].clear_bit(element);
+            chunks_->clear_bit(chunk);
 
-            if (pages_index_->get_bit(index/PageCapacity/64) == 1) {
-                pages_index_->clear_bit(index/PageCapacity/64);
-                pages_index_low_ = std::min(pages_index_low_, index/PageCapacity/64/64);
+            if (pages_->get_bit(chunk/64) == 1) {
+                pages_->clear_bit(chunk/64);
+                pages_index_low_ = std::min(pages_index_low_, chunk/64/64);
             }
         }
 
