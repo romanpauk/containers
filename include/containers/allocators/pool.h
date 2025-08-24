@@ -846,6 +846,74 @@ namespace containers {
         return !(x == y);
     }
 
+    /* The state must be initialized to non-zero */
+    // https://en.wikipedia.org/wiki/Xorshift
+    uint64_t xorshift64(uint64_t& state) {
+	    uint64_t x = state;
+    	x ^= x << 13;
+	    x ^= x >> 7;
+    	x ^= x << 17;
+	    return state = x;
+    }
+
+    // https://en.wikipedia.org/wiki/Randomized_meldable_heap
+    template <typename Node> struct random_heap {
+        random_heap() = default;
+
+        void push(Node* node) {
+            node->l = node->r = node->p = nullptr;
+            root_ = merge(node, root_);
+            root_->p = nullptr;
+            ++size_;
+        }
+
+        Node* top() {
+            return root_;
+        }
+
+        void pop() {
+            Node* root = root_;
+            root_ = merge(root_->l, root_->r);
+            if (root_ != nullptr) root_->p = nullptr;
+            --size_;
+        }
+
+        void meld(random_heap<Node>& other) {
+            root_ = merge(root_, other.top());
+            size_ += other.size();
+        }
+
+        bool empty() const {
+            return root_ == nullptr;
+        }
+
+        std::size_t size() const { return size_; }
+
+    private:
+        Node* root_ = nullptr;
+        std::size_t size_ = 0;
+        uint64_t rnd_state_ = 17;
+
+        bool coin() {
+            return xorshift64(rnd_state_) & 1;
+        }
+
+        Node* merge(Node* a, Node* b) {
+            if (a == nullptr) return b;
+            if (b == nullptr) return a;
+            if (*b < *a) return merge(b, a);
+            if (coin()) {
+                a->l = merge(a->l, b);
+                a->l->p = a;
+            } else {
+                a->r = merge(a->r, b);
+                a->r->p = a;
+            }
+            return a;
+        }
+    };
+
+
     template<typename T, std::size_t Size = 1ull << 32 > struct bump_allocator {
         // Jemalloc returns 8byte aligned memory,
         // lets do that too, at least in allocator<> where the type is known
@@ -857,18 +925,29 @@ namespace containers {
         static constexpr std::size_t PageCapacity = 64;
         static constexpr std::size_t PageCount = ChunkCount / PageCapacity;
 
+        struct page_node {
+            page_node *l, *r, *p;
+            bool operator < (const page_node& other) const { return this < &other; }
+        };
+
+        // TODO: this costs a lot of memory... :(
+        std::array<page_node, PageCount/64>* page_nodes_;
         bitmap<PageCount/64>* pages_low_;
+
         bitmap<PageCount>* pages_;
         std::array<bitmap<PageCapacity>, PageCount>* page_chunks_;
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
         uint64_t page_low_ = 0;
 
+        random_heap<page_node> page_heap_;
+
         std::set<uint64_t> lows_;
 
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*pages_low_)>();
+            builder.add<decltype(*page_nodes_)>();
+            builder.add<decltype(*pages_low_), 4096>();
             builder.add<decltype(*pages_), 4096>();
             builder.add<decltype(*page_chunks_), 4096>();
             builder.add<decltype(*chunk_elements_), 4096>();
@@ -878,7 +957,8 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>>();
+            page_nodes_ = allocator.allocate<std::decay_t<decltype(*page_nodes_)>>();
+            pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>, 4096>();
             pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
             page_chunks_ = allocator.allocate<std::decay_t<decltype(*page_chunks_)>, 4096>();
             chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
@@ -916,20 +996,28 @@ namespace containers {
                 pages_->set_bit(page);
 
                 {
-//                    auto low = pages_low_->tzcnt(page_low_);
-//                    if (low < pages_low_->size()) {
-//                        pages_low_->clear_bit(low);
-//                        page_low_ = low;
-//                    }
-
+                #if 0
+                    auto low = pages_low_->tzcnt(page_low_);
+                    if (low < pages_low_->size()) {
+                        pages_low_->clear_bit(low);
+                        page_low_ = low;
+                    }
+                #else
                     // TODO: this should not delete it, as it might get reused...
                     // with heap, we will just access top, and drop it later if there is no page there
-                    if (!lows_.empty()) {
-                        auto it = lows_.begin();
-                        page_low_ = *it;
+                    //if (!lows_.empty()) {
+                    //    auto it = lows_.begin();
+                    //    page_low_ = *it;
+                    //    pages_low_->clear_bit(page_low_);
+                    //    lows_.erase(it);
+                    //}
+                    //
+                    if (!page_heap_.empty()) {
+                        page_low_ = (page_heap_.top() - &(*page_nodes_)[0]);
                         pages_low_->clear_bit(page_low_);
-                        lows_.erase(it);
+                        page_heap_.pop();
                     }
+                #endif
                 }
 
                 {
@@ -955,12 +1043,13 @@ namespace containers {
             if (pages_->get_bit(page) == 1) {
                 pages_->clear_bit(page);
             #if 0
-                pages_index_low_ = std::min(pages_index_low_, page/64);
+                page_low_ = std::min(page_low_, page/64);
             #else
                 if (!pages_low_->get_bit(page/64)) {
                     pages_low_->set_bit(page/64);
                     page_low_ = std::min(page_low_, page/64);
-                    lows_.insert(page/64);
+                    //lows_.insert(page/64);
+                    page_heap_.push(&(*page_nodes_)[page/64]);
                 }
             #endif
             }
