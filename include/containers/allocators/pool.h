@@ -15,6 +15,7 @@
 #include <iostream>
 
 #include <immintrin.h>
+#include <set>
 #include <sys/mman.h>
 
 #define __likely__(cond) __builtin_expect((cond), true)
@@ -85,6 +86,18 @@ namespace containers {
         uint64_t tzcnt() const {
             uint64_t cnt = 0;
             for(std::size_t i = 0; i < values_.size(); ++i) {
+                auto tmp = _tzcnt_u64(values_[i]);
+                cnt += tmp;
+                if (tmp < sizeof(T) * 8)
+                    break;
+            }
+
+            return cnt;
+        }
+
+        uint64_t tzcnt(uint64_t begin) const {
+            uint64_t cnt = begin * 64;
+            for(std::size_t i = begin; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
@@ -844,15 +857,19 @@ namespace containers {
         static constexpr std::size_t PageCapacity = 64;
         static constexpr std::size_t PageCount = ChunkCount / PageCapacity;
 
+        bitmap<PageCount/64>* pages_low_;
         bitmap<PageCount>* pages_;
         std::array<bitmap<PageCapacity>, PageCount>* page_chunks_;
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
-        uint64_t pages_index_low_ = 0;
+        uint64_t page_low_ = 0;
+
+        std::set<uint64_t> lows_;
 
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*pages_)>();
+            builder.add<decltype(*pages_low_)>();
+            builder.add<decltype(*pages_), 4096>();
             builder.add<decltype(*page_chunks_), 4096>();
             builder.add<decltype(*chunk_elements_), 4096>();
             builder.add<std::array<uint8_t, ClassSize * Capacity>, Size>();
@@ -861,7 +878,8 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>>();
+            pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>>();
+            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
             page_chunks_ = allocator.allocate<std::decay_t<decltype(*page_chunks_)>, 4096>();
             chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
             base_ = (uint64_t)allocator.allocate<std::array<uint8_t, ClassSize * Capacity>, Size>();
@@ -895,11 +913,29 @@ namespace containers {
                     }
                 }
 
+                pages_->set_bit(page);
+
+                {
+//                    auto low = pages_low_->tzcnt(page_low_);
+//                    if (low < pages_low_->size()) {
+//                        pages_low_->clear_bit(low);
+//                        page_low_ = low;
+//                    }
+
+                    // TODO: this should not delete it, as it might get reused...
+                    // with heap, we will just access top, and drop it later if there is no page there
+                    if (!lows_.empty()) {
+                        auto it = lows_.begin();
+                        page_low_ = *it;
+                        pages_low_->clear_bit(page_low_);
+                        lows_.erase(it);
+                    }
+                }
+
                 {
                     // Try new page
-                    pages_->set_bit(page);
-                    auto page_new = pages_->ffz(pages_index_low_);
-                    pages_index_low_ = page_new / 64;
+                    auto page_new = pages_->ffz(page_low_);
+                    page_low_ = page_new / 64;
                     chunk_ = page_new * PageCapacity + (*page_chunks_)[page_new].ffz();
                 }
 
@@ -918,7 +954,15 @@ namespace containers {
 
             if (pages_->get_bit(page) == 1) {
                 pages_->clear_bit(page);
+            #if 0
                 pages_index_low_ = std::min(pages_index_low_, page/64);
+            #else
+                if (!pages_low_->get_bit(page/64)) {
+                    pages_low_->set_bit(page/64);
+                    page_low_ = std::min(page_low_, page/64);
+                    lows_.insert(page/64);
+                }
+            #endif
             }
         }
 
