@@ -107,6 +107,12 @@ namespace containers {
             return cnt;
         }
 
+        uint64_t tzcnt64(uint64_t i) const {
+            uint64_t cnt = i * 64;
+            cnt += _tzcnt_u64(values_[i]);
+            return cnt;
+        }
+
         uint64_t ffz(uint64_t begin = 0, uint64_t end = -1) const {
             uint64_t cnt = begin * 64;
             uint64_t j = std::min(values_.size(), end);
@@ -914,7 +920,7 @@ namespace containers {
     };
 
 
-    template<typename T, std::size_t Size = 1ull << 32 > struct bump_allocator {
+    template<typename T, std::size_t Size = 1ull << 34 > struct bump_allocator {
         // Jemalloc returns 8byte aligned memory,
         // lets do that too, at least in allocator<> where the type is known
         static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), sizeof(uint64_t)));
@@ -930,19 +936,19 @@ namespace containers {
             bool operator < (const page_node& other) const { return this < &other; }
         };
 
-        // TODO: this costs a lot of memory... :(
         std::array<page_node, PageCount/64>* page_nodes_;
         bitmap<PageCount/64>* pages_low_;
+        uint64_t pages_low_size_ = 0;
 
         bitmap<PageCount>* pages_;
         std::array<bitmap<PageCapacity>, PageCount>* page_chunks_;
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
-        uint64_t page_low_ = 0;
+        uint64_t page_low_alloc_ = 0;
+        uint64_t page_low_free_ = -1;
+        uint64_t page_high_alloc_ = 0;
 
         random_heap<page_node> page_heap_;
-
-        std::set<uint64_t> lows_;
 
         bump_allocator() {
             memory_buffer_builder builder;
@@ -985,7 +991,7 @@ namespace containers {
                 (*page_chunks_)[page].set_bit(chunk_ & (PageCapacity - 1));
 
                 {
-                    // Try same page
+                    // Try chunk from same page
                     auto chunk = (*page_chunks_)[page].ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
@@ -993,37 +999,60 @@ namespace containers {
                     }
                 }
 
+                // The page is full, remove it from pages_low_, too
                 pages_->set_bit(page);
+                if (pages_->get64(page/64) == -1) {
+                    if (pages_low_->get_bit(page/64)) {
+                        pages_low_->clear_bit(page/64);
+                        if (--pages_low_size_ == 0) {
+                            page_low_free_ = -1;
+                        }
+                    }
+                }
 
                 {
-                #if 0
-                    auto low = pages_low_->tzcnt(page_low_);
-                    if (low < pages_low_->size()) {
-                        pages_low_->clear_bit(low);
-                        page_low_ = low;
+                    // Look if next allocation fails or not
+                    if (pages_->get64(page_low_alloc_) == -1) {
+                        if (pages_low_size_) {
+                            // We have some freed pages queued
+                            auto low = pages_low_->tzcnt(page_low_free_ / 64);
+                            if (low < pages_low_->size()) {
+                                if (pages_low_->tzcnt64(page_low_free_ / 64) != low) {
+                                    //fprintf(stderr, "distance %lu\n", low - page_low_free_ / 64);
+                                }
+
+                                pages_low_->clear_bit(low);
+                                if (--pages_low_size_ == 0) {
+                                    page_low_free_ = -1;
+                                }
+                                page_low_alloc_ = low;
+                                page_low_free_ = low;
+
+                                if (pages_->get64(page_low_alloc_) == -1) {
+                                    fprintf(stderr, "looping\n");
+                                    std::abort();
+                                }
+
+                            } else {
+                                fprintf(stderr, "nothing, yet size %lu\n", pages_low_size_);
+                                std::abort();
+                            }
+                        } else {
+                            page_low_alloc_ = page_high_alloc_;
+                        }
                     }
-                #else
-                    // TODO: this should not delete it, as it might get reused...
-                    // with heap, we will just access top, and drop it later if there is no page there
-                    //if (!lows_.empty()) {
-                    //    auto it = lows_.begin();
-                    //    page_low_ = *it;
-                    //    pages_low_->clear_bit(page_low_);
-                    //    lows_.erase(it);
-                    //}
-                    //
-                    if (!page_heap_.empty()) {
-                        page_low_ = (page_heap_.top() - &(*page_nodes_)[0]);
-                        pages_low_->clear_bit(page_low_);
-                        page_heap_.pop();
-                    }
-                #endif
                 }
 
                 {
                     // Try new page
-                    auto page_new = pages_->ffz(page_low_);
-                    page_low_ = page_new / 64;
+                    auto page_new = pages_->ffz(page_low_alloc_);
+                    if (page_new == pages_->size()) {
+                        fprintf(stderr, "OOM\n");
+                        std::abort();
+                    }
+
+                    page_low_alloc_ = page_new / 64;
+                    page_high_alloc_ = std::max(page_low_alloc_, page_high_alloc_);
                     chunk_ = page_new * PageCapacity + (*page_chunks_)[page_new].ffz();
                 }
 
@@ -1039,19 +1068,24 @@ namespace containers {
             (*chunk_elements_)[chunk].clear_bit(element);
             (*page_chunks_)[page].clear_bit(chunk & (PageCapacity - 1));
 
+            // Do not treat page as live when it is quite full
+            if (_mm_popcnt_u64(~(*chunk_elements_)[chunk].get()) < 64/16)
+                return;
 
             if (pages_->get_bit(page) == 1) {
                 pages_->clear_bit(page);
-            #if 0
-                page_low_ = std::min(page_low_, page/64);
-            #else
+
+                // Mark page as live to be found when we will look,
+                // but do not schedule it for search when there are not
+                // enough free pages
+                //if (_mm_popcnt_u64(~pages_->get64(page/64)) < 64/16)
+                //    return;
+
                 if (!pages_low_->get_bit(page/64)) {
                     pages_low_->set_bit(page/64);
-                    page_low_ = std::min(page_low_, page/64);
-                    //lows_.insert(page/64);
-                    page_heap_.push(&(*page_nodes_)[page/64]);
-                }
-            #endif
+                    ++pages_low_size_;
+                    page_low_free_ = std::min(page_low_free_, page/64);
+            }
             }
         }
 
