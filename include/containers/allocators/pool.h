@@ -919,7 +919,6 @@ namespace containers {
         }
     };
 
-
     template<typename T, std::size_t Size = 1ull << 34 > struct bump_allocator {
         // Jemalloc returns 8byte aligned memory,
         // lets do that too, at least in allocator<> where the type is known
@@ -936,7 +935,6 @@ namespace containers {
             bool operator < (const page_node& other) const { return this < &other; }
         };
 
-        std::array<page_node, PageCount/64>* page_nodes_;
         bitmap<PageCount/64>* pages_low_;
         uint64_t pages_low_size_ = 0;
 
@@ -948,11 +946,8 @@ namespace containers {
         uint64_t page_low_free_ = -1;
         uint64_t page_high_alloc_ = 0;
 
-        random_heap<page_node> page_heap_;
-
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*page_nodes_)>();
             builder.add<decltype(*pages_low_), 4096>();
             builder.add<decltype(*pages_), 4096>();
             builder.add<decltype(*page_chunks_), 4096>();
@@ -963,7 +958,6 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            page_nodes_ = allocator.allocate<std::decay_t<decltype(*page_nodes_)>>();
             pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>, 4096>();
             pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
             page_chunks_ = allocator.allocate<std::decay_t<decltype(*page_chunks_)>, 4096>();
@@ -1068,7 +1062,7 @@ namespace containers {
             (*chunk_elements_)[chunk].clear_bit(element);
             (*page_chunks_)[page].clear_bit(chunk & (PageCapacity - 1));
 
-            // Do not treat page as live when it is quite full
+            // Do not treat page as live when the chunk is quite full
             if (_mm_popcnt_u64(~(*chunk_elements_)[chunk].get()) < 64/16)
                 return;
 
@@ -1085,7 +1079,7 @@ namespace containers {
                     pages_low_->set_bit(page/64);
                     ++pages_low_size_;
                     page_low_free_ = std::min(page_low_free_, page/64);
-            }
+                }
             }
         }
 
