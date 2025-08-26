@@ -931,8 +931,8 @@ namespace containers {
         };
 
         // TODO: one class {
-        bitmap<PageCount/64>* pages_live_index_;
-        uint64_t pages_live_index_size_ = 0;
+        bitmap<PageCount/64>* pages_index_;
+        uint64_t pages_index_size_ = 0;
         // }
 
         bitmap<PageCount>* pages_full_;
@@ -940,13 +940,13 @@ namespace containers {
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
 
-        uint64_t page_low_alloc_ = 0;
-        uint64_t page_low_free_ = -1;
-        uint64_t page_high_alloc_ = 0;
+        uint64_t pages_index_alloc_low_ = 0;
+        uint64_t pages_index_alloc_high_ = 0;
+        uint64_t pages_index_free_ = -1;
 
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*pages_live_index_), 4096>();
+            builder.add<decltype(*pages_index_), 4096>();
             builder.add<decltype(*pages_full_), 4096>();
             builder.add<decltype(*page_chunks_full_), 4096>();
             builder.add<decltype(*chunk_elements_), 4096>();
@@ -956,7 +956,7 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            pages_live_index_ = allocator.allocate<std::decay_t<decltype(*pages_live_index_)>, 4096>();
+            pages_index_ = allocator.allocate<std::decay_t<decltype(*pages_index_)>, 4096>();
             pages_full_ = allocator.allocate<std::decay_t<decltype(*pages_full_)>, 4096>();
             page_chunks_full_ = allocator.allocate<std::decay_t<decltype(*page_chunks_full_)>, 4096>();
             chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
@@ -994,50 +994,50 @@ namespace containers {
                 // The page is full, remove it from live pages, too
                 pages_full_->set_bit(page);
                 if (pages_full_->get64(page/64) == -1) {
-                    if (pages_live_index_->get_bit(page/64)) {
-                        pages_live_index_->clear_bit(page/64);
-                        if (--pages_live_index_size_ == 0) {
-                            page_low_free_ = -1;
+                    if (pages_index_->get_bit(page/64)) {
+                        pages_index_->clear_bit(page/64);
+                        if (--pages_index_size_ == 0) {
+                            pages_index_free_ = -1;
                         }
                     }
                 }
 
                 {
                     // Look if next allocation fails or not
-                    if (pages_full_->get64(page_low_alloc_) == -1) {
-                        if (pages_live_index_size_) {
+                    if (pages_full_->get64(pages_index_alloc_low_) == -1) {
+                        if (pages_index_size_) {
                             // We have some freed pages queued
-                            auto low = pages_live_index_->tzcnt64(page_low_free_ / 64);
-                            if (low < pages_live_index_->size()) {
-                                pages_live_index_->clear_bit(low);
-                                if (--pages_live_index_ == 0) {
-                                    page_low_free_ = -1;
+                            auto low = pages_index_->tzcnt64(pages_index_free_ / 64);
+                            if (low < pages_index_->size()) {
+                                pages_index_->clear_bit(low);
+                                if (--pages_index_size_ == 0) {
+                                    pages_index_free_ = -1;
                                 }
-                                page_low_alloc_ = low;
-                                page_low_free_ = low;
+                                pages_index_alloc_low_ = low;
+                                pages_index_free_ = low;
 
-                                if (pages_full_->get64(page_low_alloc_) == -1) {
+                                if (pages_full_->get64(pages_index_alloc_low_) == -1) {
                                     __guarantee__(false, "looping\n");
                                 }
 
                             } else {
-                                __guarantee__(false, "nothing, yet size %lu\n", pages_live_index_size_);
+                                __guarantee__(false, "nothing, yet size %lu\n", pages_index_size_);
                             }
                         } else {
-                            page_low_alloc_ = page_high_alloc_;
+                            pages_index_alloc_low_ = pages_index_alloc_high_;
                         }
                     }
                 }
 
                 {
                     // Try new page
-                    auto page_new = pages_full_->ffz64(page_low_alloc_);
+                    auto page_new = pages_full_->ffz64(pages_index_alloc_low_);
                     if (page_new == pages_full_->size()) {
                         __guarantee__(false, "OOM\n");
                     }
 
-                    page_low_alloc_ = page_new / 64;
-                    page_high_alloc_ = std::max(page_low_alloc_, page_high_alloc_);
+                    pages_index_alloc_low_ = page_new / 64;
+                    pages_index_alloc_high_ = std::max(pages_index_alloc_low_, pages_index_alloc_high_);
                     chunk_ = page_new * PageCapacity + (*page_chunks_full_)[page_new].ffz();
                 }
 
@@ -1066,10 +1066,10 @@ namespace containers {
                 //if (_mm_popcnt_u64(~pages_->get64(page/64)) < 64/16)
                 //    return;
 
-                if (!pages_live_index_->get_bit(page/64)) {
-                    pages_live_index_->set_bit(page/64);
-                    ++pages_live_index_size_;
-                    page_low_free_ = std::min(page_low_free_, page/64);
+                if (!pages_index_->get_bit(page/64)) {
+                    pages_index_->set_bit(page/64);
+                    ++pages_index_size_;
+                    pages_index_free_ = std::min(pages_index_free_, page/64);
                 }
             }
         }
