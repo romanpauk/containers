@@ -930,20 +930,23 @@ namespace containers {
             bool operator < (const page_node& other) const { return this < &other; }
         };
 
-        bitmap<PageCount/64>* pages_low_;
-        uint64_t pages_low_size_ = 0;
+        // TODO: one class {
+        bitmap<PageCount/64>* pages_live_index_;
+        uint64_t pages_live_index_size_ = 0;
+        // }
 
         bitmap<PageCount>* pages_full_;
         std::array<bitmap<PageCapacity>, PageCount>* page_chunks_full_;
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
+
         uint64_t page_low_alloc_ = 0;
         uint64_t page_low_free_ = -1;
         uint64_t page_high_alloc_ = 0;
 
         bump_allocator() {
             memory_buffer_builder builder;
-            builder.add<decltype(*pages_low_), 4096>();
+            builder.add<decltype(*pages_live_index_), 4096>();
             builder.add<decltype(*pages_full_), 4096>();
             builder.add<decltype(*page_chunks_full_), 4096>();
             builder.add<decltype(*chunk_elements_), 4096>();
@@ -953,7 +956,7 @@ namespace containers {
             memory_ = mmap(0, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
             memory_buffer_allocator allocator(memory_, size_);
-            pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>, 4096>();
+            pages_live_index_ = allocator.allocate<std::decay_t<decltype(*pages_live_index_)>, 4096>();
             pages_full_ = allocator.allocate<std::decay_t<decltype(*pages_full_)>, 4096>();
             page_chunks_full_ = allocator.allocate<std::decay_t<decltype(*page_chunks_full_)>, 4096>();
             chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
@@ -988,12 +991,12 @@ namespace containers {
                     }
                 }
 
-                // The page is full, remove it from pages_low_, too
+                // The page is full, remove it from live pages, too
                 pages_full_->set_bit(page);
                 if (pages_full_->get64(page/64) == -1) {
-                    if (pages_low_->get_bit(page/64)) {
-                        pages_low_->clear_bit(page/64);
-                        if (--pages_low_size_ == 0) {
+                    if (pages_live_index_->get_bit(page/64)) {
+                        pages_live_index_->clear_bit(page/64);
+                        if (--pages_live_index_size_ == 0) {
                             page_low_free_ = -1;
                         }
                     }
@@ -1002,12 +1005,12 @@ namespace containers {
                 {
                     // Look if next allocation fails or not
                     if (pages_full_->get64(page_low_alloc_) == -1) {
-                        if (pages_low_size_) {
+                        if (pages_live_index_size_) {
                             // We have some freed pages queued
-                            auto low = pages_low_->tzcnt64(page_low_free_ / 64);
-                            if (low < pages_low_->size()) {
-                                pages_low_->clear_bit(low);
-                                if (--pages_low_size_ == 0) {
+                            auto low = pages_live_index_->tzcnt64(page_low_free_ / 64);
+                            if (low < pages_live_index_->size()) {
+                                pages_live_index_->clear_bit(low);
+                                if (--pages_live_index_ == 0) {
                                     page_low_free_ = -1;
                                 }
                                 page_low_alloc_ = low;
@@ -1018,7 +1021,7 @@ namespace containers {
                                 }
 
                             } else {
-                                __guarantee__(false, "nothing, yet size %lu\n", pages_low_size_);
+                                __guarantee__(false, "nothing, yet size %lu\n", pages_live_index_size_);
                             }
                         } else {
                             page_low_alloc_ = page_high_alloc_;
@@ -1030,8 +1033,7 @@ namespace containers {
                     // Try new page
                     auto page_new = pages_full_->ffz64(page_low_alloc_);
                     if (page_new == pages_full_->size()) {
-                        fprintf(stderr, "OOM\n");
-                        std::abort();
+                        __guarantee__(false, "OOM\n");
                     }
 
                     page_low_alloc_ = page_new / 64;
@@ -1064,9 +1066,9 @@ namespace containers {
                 //if (_mm_popcnt_u64(~pages_->get64(page/64)) < 64/16)
                 //    return;
 
-                if (!pages_low_->get_bit(page/64)) {
-                    pages_low_->set_bit(page/64);
-                    ++pages_low_size_;
+                if (!pages_live_index_->get_bit(page/64)) {
+                    pages_live_index_->set_bit(page/64);
+                    ++pages_live_index_size_;
                     page_low_free_ = std::min(page_low_free_, page/64);
                 }
             }
