@@ -48,6 +48,8 @@ constexpr const char* basefilename(const char* path) {
 #define __stats__(...)
 #endif
 
+#define __guarantee__(cond, ...) do { if(!(cond)) { fprintf(stderr, "%s: %d: ", basefilename(__FILE__), __LINE__); fprintf(stderr, __VA_ARGS__); std::abort(); } } while(0)
+
 namespace containers {
     template< std::size_t N, typename T = uint64_t > struct bitmap {
         static_assert((N & (N - 1)) == 0);
@@ -95,7 +97,7 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t tzcnt(uint64_t begin) const {
+        uint64_t tzcnt64(uint64_t begin) const {
             uint64_t cnt = begin * 64;
             for(std::size_t i = begin; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(values_[i]);
@@ -107,16 +109,9 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t tzcnt64(uint64_t i) const {
-            uint64_t cnt = i * 64;
-            cnt += _tzcnt_u64(values_[i]);
-            return cnt;
-        }
-
-        uint64_t ffz(uint64_t begin = 0, uint64_t end = -1) const {
-            uint64_t cnt = begin * 64;
-            uint64_t j = std::min(values_.size(), end);
-            for(std::size_t i = begin; i < j; ++i) {
+        uint64_t ffz() const {
+            uint64_t cnt = 0;
+            for(std::size_t i = 0; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
                 cnt += tmp;
                 if (tmp < sizeof(T) * 8)
@@ -126,7 +121,7 @@ namespace containers {
             return cnt;
         }
 
-        uint64_t ffz64(uint64_t n = 0) const {
+        uint64_t ffz64(uint64_t n) const {
             uint64_t cnt = n * 64;
             for(std::size_t i = n; i < values_.size(); ++i) {
                 auto tmp = _tzcnt_u64(~values_[i]);
@@ -160,7 +155,7 @@ namespace containers {
             value_ |= (uint64_t(1) << i);
         }
 
-        uint64_t get() const { return value_; }
+        uint64_t get64() const { return value_; }
 
         uint64_t get_bit(uint64_t i) const {
             assert(i < size());
@@ -547,7 +542,7 @@ namespace containers {
 #endif
             // Look for an used page with a free chunk that can be reused by this size
             auto& page_size_bitmap = descriptor.page_size_bitmaps[Metadata::index];
-            auto page_size_value = page_size_bitmap.get();
+            auto page_size_value = page_size_bitmap.get64();
 
             // https://lemire.me/blog/2018/02/21/iterating-over-set-bits-quickly/
             while (page_size_value != 0) {
@@ -740,7 +735,7 @@ namespace containers {
                     __debug__("clear bit page %lu chunk %lu\n", page, chunk);
                     descriptor.page_live_chunks_bitmaps[Metadata::index].clear_bit(page * Metadata::chunk_count + chunk);
 
-                    if (descriptor.page_chunk_bitmaps[page].get() == 0) {
+                    if (descriptor.page_chunk_bitmaps[page].get64() == 0) {
                         // Page is completely empty
 
                         // TODO: assert that all that should be empty is
@@ -749,7 +744,7 @@ namespace containers {
                         descriptor.page_bitmap.clear_bit(page);
                         descriptor.page_size_bitmaps[Metadata::index].clear_bit(page);
 
-                        if (descriptor.page_bitmap.get() == 0) {
+                        if (descriptor.page_bitmap.get64() == 0) {
                             assert(group != state.group);
                             protect_group(group, PROT_NONE);
                             page_group_liveset_->clear_bit(group);
@@ -938,8 +933,8 @@ namespace containers {
         bitmap<PageCount/64>* pages_low_;
         uint64_t pages_low_size_ = 0;
 
-        bitmap<PageCount>* pages_;
-        std::array<bitmap<PageCapacity>, PageCount>* page_chunks_;
+        bitmap<PageCount>* pages_full_;
+        std::array<bitmap<PageCapacity>, PageCount>* page_chunks_full_;
         std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
         uint64_t page_low_alloc_ = 0;
@@ -949,8 +944,8 @@ namespace containers {
         bump_allocator() {
             memory_buffer_builder builder;
             builder.add<decltype(*pages_low_), 4096>();
-            builder.add<decltype(*pages_), 4096>();
-            builder.add<decltype(*page_chunks_), 4096>();
+            builder.add<decltype(*pages_full_), 4096>();
+            builder.add<decltype(*page_chunks_full_), 4096>();
             builder.add<decltype(*chunk_elements_), 4096>();
             builder.add<std::array<uint8_t, ClassSize * Capacity>, Size>();
 
@@ -959,8 +954,8 @@ namespace containers {
 
             memory_buffer_allocator allocator(memory_, size_);
             pages_low_ = allocator.allocate<std::decay_t<decltype(*pages_low_)>, 4096>();
-            pages_ = allocator.allocate<std::decay_t<decltype(*pages_)>, 4096>();
-            page_chunks_ = allocator.allocate<std::decay_t<decltype(*page_chunks_)>, 4096>();
+            pages_full_ = allocator.allocate<std::decay_t<decltype(*pages_full_)>, 4096>();
+            page_chunks_full_ = allocator.allocate<std::decay_t<decltype(*page_chunks_full_)>, 4096>();
             chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
             base_ = (uint64_t)allocator.allocate<std::array<uint8_t, ClassSize * Capacity>, Size>();
         }
@@ -982,11 +977,11 @@ namespace containers {
                 return p;
             } else {
                 auto page = chunk_ / PageCapacity;
-                (*page_chunks_)[page].set_bit(chunk_ & (PageCapacity - 1));
+                (*page_chunks_full_)[page].set_bit(chunk_ & (PageCapacity - 1));
 
                 {
                     // Try chunk from same page
-                    auto chunk = (*page_chunks_)[page].ffz();
+                    auto chunk = (*page_chunks_full_)[page].ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
                         goto again;
@@ -994,8 +989,8 @@ namespace containers {
                 }
 
                 // The page is full, remove it from pages_low_, too
-                pages_->set_bit(page);
-                if (pages_->get64(page/64) == -1) {
+                pages_full_->set_bit(page);
+                if (pages_full_->get64(page/64) == -1) {
                     if (pages_low_->get_bit(page/64)) {
                         pages_low_->clear_bit(page/64);
                         if (--pages_low_size_ == 0) {
@@ -1006,15 +1001,11 @@ namespace containers {
 
                 {
                     // Look if next allocation fails or not
-                    if (pages_->get64(page_low_alloc_) == -1) {
+                    if (pages_full_->get64(page_low_alloc_) == -1) {
                         if (pages_low_size_) {
                             // We have some freed pages queued
-                            auto low = pages_low_->tzcnt(page_low_free_ / 64);
+                            auto low = pages_low_->tzcnt64(page_low_free_ / 64);
                             if (low < pages_low_->size()) {
-                                if (pages_low_->tzcnt64(page_low_free_ / 64) != low) {
-                                    //fprintf(stderr, "distance %lu\n", low - page_low_free_ / 64);
-                                }
-
                                 pages_low_->clear_bit(low);
                                 if (--pages_low_size_ == 0) {
                                     page_low_free_ = -1;
@@ -1022,14 +1013,12 @@ namespace containers {
                                 page_low_alloc_ = low;
                                 page_low_free_ = low;
 
-                                if (pages_->get64(page_low_alloc_) == -1) {
-                                    fprintf(stderr, "looping\n");
-                                    std::abort();
+                                if (pages_full_->get64(page_low_alloc_) == -1) {
+                                    __guarantee__(false, "looping\n");
                                 }
 
                             } else {
-                                fprintf(stderr, "nothing, yet size %lu\n", pages_low_size_);
-                                std::abort();
+                                __guarantee__(false, "nothing, yet size %lu\n", pages_low_size_);
                             }
                         } else {
                             page_low_alloc_ = page_high_alloc_;
@@ -1039,15 +1028,15 @@ namespace containers {
 
                 {
                     // Try new page
-                    auto page_new = pages_->ffz(page_low_alloc_);
-                    if (page_new == pages_->size()) {
+                    auto page_new = pages_full_->ffz64(page_low_alloc_);
+                    if (page_new == pages_full_->size()) {
                         fprintf(stderr, "OOM\n");
                         std::abort();
                     }
 
                     page_low_alloc_ = page_new / 64;
                     page_high_alloc_ = std::max(page_low_alloc_, page_high_alloc_);
-                    chunk_ = page_new * PageCapacity + (*page_chunks_)[page_new].ffz();
+                    chunk_ = page_new * PageCapacity + (*page_chunks_full_)[page_new].ffz();
                 }
 
                 goto again;
@@ -1060,14 +1049,14 @@ namespace containers {
             auto page = chunk/PageCapacity;
             auto element = index & (ChunkCapacity - 1);
             (*chunk_elements_)[chunk].clear_bit(element);
-            (*page_chunks_)[page].clear_bit(chunk & (PageCapacity - 1));
+            (*page_chunks_full_)[page].clear_bit(chunk & (PageCapacity - 1));
 
             // Do not treat page as live when the chunk is quite full
-            if (_mm_popcnt_u64(~(*chunk_elements_)[chunk].get()) < 64/16)
+            if (_mm_popcnt_u64(~(*chunk_elements_)[chunk].get64()) < 64/16)
                 return;
 
-            if (pages_->get_bit(page) == 1) {
-                pages_->clear_bit(page);
+            if (pages_full_->get_bit(page) == 1) {
+                pages_full_->clear_bit(page);
 
                 // Mark page as live to be found when we will look,
                 // but do not schedule it for search when there are not
