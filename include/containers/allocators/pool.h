@@ -939,6 +939,18 @@ namespace containers {
             return (void*)(base_ + (2 * id * ClassSpaceSize));
         }
 
+        void* get_class_metadata(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize));
+        }
+
+        void* get_class_memory(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize) + ClassSpaceSize);
+        }
+
         uint64_t get_class_space_index(void* p) {
             return ((uint64_t)p - base_) / 2 / ClassSpaceSize;
         }
@@ -1128,16 +1140,14 @@ namespace containers {
 
         bump_allocator_metadata<ClassSize, Size>* metadata_;
         Manager& manager_;
+        uint64_t base_;
 
         bump_allocator(Manager& manager): manager_(manager) {
-            memory_buffer_allocator allocator(manager_.get_class_space(ClassSize), Size * 2);
-            metadata_ = allocator.allocate<std::decay_t<decltype(*metadata_)>, 4096>();
-
+            metadata_ = (bump_allocator_metadata<ClassSize, Size>*)manager_.get_class_metadata(ClassSize);
             mprotect(metadata_, sizeof(*metadata_), PROT_READ | PROT_WRITE);
-
             new (metadata_) bump_allocator_metadata<ClassSize, Size>();
 
-            base_ = (uint64_t)allocator.allocate<std::array<uint8_t, Size>, Size>();
+            base_ = (uint64_t)manager_.get_class_memory(ClassSize);
             metadata_->commit(base_, 0);
         }
 
@@ -1152,9 +1162,6 @@ namespace containers {
         void deallocate(T* p, std::size_t n) {
             metadata_->deallocate(base_, p, n);
         }
-
-    private:
-        uint64_t base_;
     };
 }
 
