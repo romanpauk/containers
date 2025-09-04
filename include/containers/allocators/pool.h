@@ -914,10 +914,39 @@ namespace containers {
         }
     };
 
-    template<typename T, std::size_t Size = 1ull << 34 > struct bump_allocator {
-        // Jemalloc returns 8byte aligned memory,
-        // lets do that too, at least in allocator<> where the type is known
-        static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), sizeof(uint64_t)));
+    template<std::size_t Size> struct bump_allocator_manager {
+        static constexpr uint64_t ClassSpaceSize = Size;
+        static constexpr uint64_t MappedSize = 1ull << 44;
+
+        void* memory_ = nullptr;
+        uint64_t base_ = 0;
+
+        bump_allocator_manager() {
+            memory_ = mmap(0, MappedSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            base_ = ((uint64_t)memory_ + ClassSpaceSize - 1) & ~(ClassSpaceSize - 1);
+            __guarantee__(memory_ != MAP_FAILED, "mmap failed");
+        }
+
+        ~bump_allocator_manager() {
+            munmap(memory_, MappedSize);
+        }
+
+        static std::size_t log2(std::size_t n) { return 63 - __builtin_clz(n); }
+
+        void* get_class_space(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize));
+        }
+
+        uint64_t get_class_space_index(void* p) {
+            return ((uint64_t)p - base_) / 2 / ClassSpaceSize;
+        }
+    };
+
+    // TODO: there can be N those allocators with the same type,
+    // so need a way to get metadata indirectly
+    template<std::size_t ClassSize, std::size_t Size> struct bump_allocator_metadata {
         static constexpr std::size_t Capacity = Size / ClassSize;
         static constexpr std::size_t ChunkCapacity = 64;
         static constexpr std::size_t ChunkCount = Capacity / ChunkCapacity;
@@ -927,91 +956,52 @@ namespace containers {
         static constexpr std::size_t PageCount = ChunkCount / PageCapacity;
         static constexpr std::size_t PageSize = ChunkSize * PageCapacity;
 
-        struct page_node {
-            page_node *l, *r, *p;
-            bool operator < (const page_node& other) const { return this < &other; }
-        };
-
-        // TODO: one class {
-        bitmap<PageCount/64>* pages_index_;
-        uint64_t pages_index_size_ = 0;
-        // }
-
-        bitmap<PageCount>* pages_full_;
-        bitmap<PageCount>* pages_committed_;
-        std::array<bitmap<PageCapacity>, PageCount>* page_chunks_full_;
-        std::array<bitmap<ChunkCapacity>, ChunkCount>* chunk_elements_;
         uint64_t chunk_ = 0;
-
         uint64_t pages_index_alloc_low_ = 0;
         uint64_t pages_index_alloc_high_ = 0;
         uint64_t pages_index_free_ = -1;
+        uint64_t pages_index_size_ = 0;
 
-        bump_allocator() {
-            memory_buffer_builder builder;
-            builder.add<decltype(*pages_index_), 4096>();
-            builder.add<decltype(*pages_full_), 4096>();
-            builder.add<decltype(*pages_committed_), 4096>();
-            builder.add<decltype(*page_chunks_full_), 4096>();
-            builder.add<decltype(*chunk_elements_), 4096>();
-            auto rw_size = builder.size();
+        bitmap<PageCount/64> pages_index_;
+        bitmap<PageCount> pages_full_;
+        bitmap<PageCount> pages_committed_;
+        std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
+        std::array<bitmap<ChunkCapacity>, ChunkCount> chunk_elements_;
 
-            builder.add<std::array<uint8_t, ClassSize * Capacity>, Size>();
+        bump_allocator_metadata() = default;
 
-            size_ = builder.size();
-            memory_ = mmap(0, size_, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-            memory_buffer_allocator allocator(memory_, size_);
-            pages_index_ = allocator.allocate<std::decay_t<decltype(*pages_index_)>, 4096>();
-            pages_full_ = allocator.allocate<std::decay_t<decltype(*pages_full_)>, 4096>();
-            pages_committed_ = allocator.allocate<std::decay_t<decltype(*pages_committed_)>, 4096>();
-            page_chunks_full_ = allocator.allocate<std::decay_t<decltype(*page_chunks_full_)>, 4096>();
-            chunk_elements_ = allocator.allocate<std::decay_t<decltype(*chunk_elements_)>, 4096>();
-            mprotect(memory_, rw_size, PROT_READ | PROT_WRITE);
-
-            base_ = (uint64_t)allocator.allocate<std::array<uint8_t, ClassSize * Capacity>, Size>();
-
-            // TODO: first page, map for all allocators such that allocation will trigger
-            // new page
-            commit(0);
-        }
-
-        ~bump_allocator() {
-            munmap(memory_, size_);
-        }
-
-        void commit(uint64_t page) {
-            assert(pages_committed_->get_bit(page) == 0);
-            if (mprotect((void*)(base_ + page * PageSize), PageSize, PROT_READ | PROT_WRITE) == -1)
+        void commit(uint64_t base, uint64_t page) {
+            assert(pages_committed_.get_bit(page) == 0);
+            if (mprotect((void*)(base + page * PageSize), PageSize, PROT_READ | PROT_WRITE) == -1)
                 __guarantee__(false, "commit failed\n");
-            pages_committed_->set_bit(page);
+            pages_committed_.set_bit(page);
         }
 
-        void decommit(uint64_t page) {
-            assert(pages_committed_->get_bit(page) == 1);
-            if (mprotect((void*)(base_ + page * PageSize), PageSize, PROT_NONE) == -1)
+        void decommit(uint64_t base, uint64_t page) {
+            assert(pages_committed_.get_bit(page) == 1);
+            if (mprotect((void*)(base + page * PageSize), PageSize, PROT_NONE) == -1)
                 __guarantee__(false, "decommit failed\n");
-            pages_committed_->clear_bit(page);
+            pages_committed_.clear_bit(page);
         }
 
-        T* allocate(std::size_t n) {
+        void* allocate(uint64_t base, std::size_t n) {
             assert(n == 1); (void)n;
 
         again:
-            auto index = (*chunk_elements_)[chunk_].ffz();
+            auto index = chunk_elements_[chunk_].ffz();
             if (__likely__(index < ChunkCapacity)) {
-                (*chunk_elements_)[chunk_].set_bit(index);
+                chunk_elements_[chunk_].set_bit(index);
                 index += chunk_ * ChunkCapacity;
-                T* p = (T*)(base_ + ClassSize * index);
+                void* p = (void*)(base + ClassSize * index);
                 assert(get_index(p) == index);
                 return p;
             } else {
                 auto page = chunk_ / PageCapacity;
-                (*page_chunks_full_)[page].set_bit(chunk_ & (PageCapacity - 1));
+                page_chunks_full_[page].set_bit(chunk_ & (PageCapacity - 1));
 
                 {
                     // Try chunk from same page
-                    auto chunk = (*page_chunks_full_)[page].ffz();
+                    auto chunk = page_chunks_full_[page].ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
                         goto again;
@@ -1019,10 +1009,10 @@ namespace containers {
                 }
 
                 // The page is full, remove it from live pages, too
-                pages_full_->set_bit(page);
-                if (pages_full_->get64(page/64) == -1) {
-                    if (pages_index_->get_bit(page/64)) {
-                        pages_index_->clear_bit(page/64);
+                pages_full_.set_bit(page);
+                if (pages_full_.get64(page/64) == -1) {
+                    if (pages_index_.get_bit(page/64)) {
+                        pages_index_.clear_bit(page/64);
                         if (--pages_index_size_ == 0) {
                             pages_index_free_ = -1;
                         }
@@ -1031,19 +1021,19 @@ namespace containers {
 
                 {
                     // Look if next allocation fails or not
-                    if (pages_full_->get64(pages_index_alloc_low_) == -1) {
+                    if (pages_full_.get64(pages_index_alloc_low_) == -1) {
                         if (pages_index_size_) {
                             // We have some freed pages queued
-                            auto low = pages_index_->tzcnt64(pages_index_free_ / 64);
-                            if (low < pages_index_->size()) {
-                                pages_index_->clear_bit(low);
+                            auto low = pages_index_.tzcnt64(pages_index_free_ / 64);
+                            if (low < pages_index_.size()) {
+                                pages_index_.clear_bit(low);
                                 if (--pages_index_size_ == 0) {
                                     pages_index_free_ = -1;
                                 }
                                 pages_index_alloc_low_ = low;
                                 pages_index_free_ = low;
 
-                                if (pages_full_->get64(pages_index_alloc_low_) == -1) {
+                                if (pages_full_.get64(pages_index_alloc_low_) == -1) {
                                     __guarantee__(false, "looping\n");
                                 }
 
@@ -1053,22 +1043,22 @@ namespace containers {
                         } else {
                             pages_index_alloc_low_ = pages_index_alloc_high_;
                         }
-        }
+                    }
                 }
 
                 {
                     // Try new page
-                    auto page_new = pages_full_->ffz64(pages_index_alloc_low_);
-                    if (page_new == pages_full_->size()) {
+                    auto page_new = pages_full_.ffz64(pages_index_alloc_low_);
+                    if (page_new == pages_full_.size()) {
                         __guarantee__(false, "OOM\n");
                     }
 
                     pages_index_alloc_low_ = page_new / 64;
                     pages_index_alloc_high_ = std::max(pages_index_alloc_low_, pages_index_alloc_high_);
-                    chunk_ = page_new * PageCapacity + (*page_chunks_full_)[page_new].ffz();
+                    chunk_ = page_new * PageCapacity + page_chunks_full_[page_new].ffz();
 
-                    if (!pages_committed_->get_bit(page_new)) {
-                        commit(page_new);
+                    if (!pages_committed_.get_bit(page_new)) {
+                        commit(base, page_new);
                     }
                 }
 
@@ -1076,21 +1066,21 @@ namespace containers {
             }
         }
 
-        void deallocate(T* p, std::size_t) {
+        void deallocate(uint64_t base, void* p, std::size_t) {
             auto index = get_index(p);
             auto chunk = index/ChunkCapacity;
             auto page = chunk/PageCapacity;
             auto element = index & (ChunkCapacity - 1);
-            (*chunk_elements_)[chunk].clear_bit(element);
-            (*page_chunks_full_)[page].clear_bit(chunk & (PageCapacity - 1));
+            chunk_elements_[chunk].clear_bit(element);
+            page_chunks_full_[page].clear_bit(chunk & (PageCapacity - 1));
 
             // Do not treat page as live when the chunk is quite full
-            auto free_count = _mm_popcnt_u64(~(*chunk_elements_)[chunk].get64());
+            auto free_count = _mm_popcnt_u64(~chunk_elements_[chunk].get64());
             if (free_count < 64/16)
                 return;
 
-            if (pages_full_->get_bit(page) == 1) {
-                pages_full_->clear_bit(page);
+            if (pages_full_.get_bit(page) == 1) {
+                pages_full_.clear_bit(page);
 
                 // Mark page as live to be found when we will look,
                 // but do not schedule it for search when there are not
@@ -1098,8 +1088,8 @@ namespace containers {
                 //if (_mm_popcnt_u64(~pages_->get64(page/64)) < 64/16)
                 //    return;
 
-                if (!pages_index_->get_bit(page/64)) {
-                    pages_index_->set_bit(page/64);
+                if (!pages_index_.get_bit(page/64)) {
+                    pages_index_.set_bit(page/64);
                     ++pages_index_size_;
                     pages_index_free_ = std::min(pages_index_free_, page/64);
                 }
@@ -1107,10 +1097,10 @@ namespace containers {
                 // If this chunk is completely free
                 if (free_count == 64) {
                     // And rest of chunks are not full
-                    if ((*page_chunks_full_)[page].get64() == 0) {
+                    if (page_chunks_full_[page].get64() == 0) {
                         // And they are really free
                         for (auto c = page * PageCapacity; c < (page + 1) / PageCapacity; ++c) {
-                            if ((*chunk_elements_)[c].get64() != 0)
+                            if (chunk_elements_[c].get64() != 0)
                                 return;
                         }
 
@@ -1118,7 +1108,7 @@ namespace containers {
                         // TODO: ... and not special case of page 0
                         if (page == 0 || page == chunk_ / PageCapacity)
                             return;
-                        decommit(page);
+                        decommit(base, page);
                     }
                 }
             }
@@ -1127,11 +1117,43 @@ namespace containers {
         uint64_t get_index(void* ptr) {
             return ((uint64_t)ptr & (Size - 1)) / ClassSize;
         }
+    };
+
+    template<typename T, typename Manager > struct bump_allocator {
+        static constexpr uint64_t Size = Manager::ClassSpaceSize;
+
+        // Jemalloc returns 8byte aligned memory,
+        // lets do that too, at least in allocator<> where the type is known
+        static constexpr std::size_t ClassSize = RoundUp(std::max(sizeof(T), sizeof(uint64_t)));
+
+        bump_allocator_metadata<ClassSize, Size>* metadata_;
+        Manager& manager_;
+
+        bump_allocator(Manager& manager): manager_(manager) {
+            memory_buffer_allocator allocator(manager_.get_class_space(ClassSize), Size * 2);
+            metadata_ = allocator.allocate<std::decay_t<decltype(*metadata_)>, 4096>();
+
+            mprotect(metadata_, sizeof(*metadata_), PROT_READ | PROT_WRITE);
+
+            new (metadata_) bump_allocator_metadata<ClassSize, Size>();
+
+            base_ = (uint64_t)allocator.allocate<std::array<uint8_t, Size>, Size>();
+            metadata_->commit(base_, 0);
+        }
+
+        //template <class U> bump_allocator(bump_allocator<U, Manager> const& other) noexcept
+        //    : bump_allocator<T, Manager>(other.manager_)
+        //{}
+
+        T* allocate(std::size_t n) {
+            return (T*)metadata_->allocate(base_, n);
+        }
+
+        void deallocate(T* p, std::size_t n) {
+            metadata_->deallocate(base_, p, n);
+        }
 
     private:
-        void* memory_;
-        std::size_t size_ = 0;
-
         uint64_t base_;
     };
 }

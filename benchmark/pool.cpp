@@ -26,7 +26,8 @@ uint64_t xorshift64(uint64_t& state) {
 template<typename T> T get() { return T(); }
 
 template<typename T> static void bump_allocator_allocate_seq(benchmark::State& state) {
-    containers::bump_allocator<T> allocator;
+    containers::bump_allocator_manager<1ull<<32> manager;
+    containers::bump_allocator<T, decltype(manager)> allocator(manager);
 
     std::vector<T*> ptrs(state.range());
 
@@ -45,7 +46,8 @@ template<typename T> static void bump_allocator_allocate_seq(benchmark::State& s
 }
 
 template<typename T> static void bump_allocator_allocate_rnd(benchmark::State& state) {
-    containers::bump_allocator<T> allocator;
+    containers::bump_allocator_manager<1ull<<32> manager;
+    containers::bump_allocator<T, decltype(manager)> allocator(manager);
 
     std::vector<T*> ptrs(state.range());
     uint64_t tmp = 12345;
@@ -250,7 +252,7 @@ template<typename T> static void allocator_allocate_set(benchmark::State& state)
     state.SetBytesProcessed(state.iterations() * state.range());
 }
 
-using T = std::array<uint64_t, 1>;
+using T = std::array<uint64_t, 4>;
 
 BENCHMARK_TEMPLATE(bump_allocator_allocate_seq, T)->Range(1, N);
 BENCHMARK_TEMPLATE(bump_allocator_allocate_rnd, T)->Range(1, N);
