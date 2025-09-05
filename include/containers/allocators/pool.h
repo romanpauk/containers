@@ -534,7 +534,7 @@ namespace containers {
                     auto chunk = bit % Metadata::chunk_count;
                     __debug__("checking page %lu, chunk %lu, bit %lu\n", page, chunk, bit);
                     assert(descriptor.page_live_chunks_bitmaps[Metadata::index].get_bit(page * Metadata::chunk_count + chunk) == 1);
-                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() != (uint64_t)-1);
+                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get64() != (uint64_t)-1);
                     setup_allocator_state<Metadata>(state, group, page, chunk);
                     return true;
                 }
@@ -566,7 +566,7 @@ namespace containers {
                         ++stats_->allocate_update_page_used_page;
                     );
 
-                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get() == 0);
+                    assert(descriptor.page_chunk_elements_bitmaps[page][chunk].get64() == 0);
                     descriptor.page_chunk_bitmaps[page].set_bit(chunk);
 
                     // This chunk is not live
@@ -914,50 +914,6 @@ namespace containers {
         }
     };
 
-    template<std::size_t Size> struct bump_allocator_manager {
-        static constexpr uint64_t ClassSpaceSize = Size;
-        static constexpr uint64_t MappedSize = 1ull << 44;
-
-        void* memory_ = nullptr;
-        uint64_t base_ = 0;
-
-        bump_allocator_manager() {
-            memory_ = mmap(0, MappedSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            base_ = ((uint64_t)memory_ + ClassSpaceSize - 1) & ~(ClassSpaceSize - 1);
-            __guarantee__(memory_ != MAP_FAILED, "mmap failed");
-        }
-
-        ~bump_allocator_manager() {
-            munmap(memory_, MappedSize);
-        }
-
-        static std::size_t log2(std::size_t n) { return 63 - __builtin_clz(n); }
-
-        void* get_class_space(std::size_t class_size) {
-            assert(class_size >= 8);
-            auto id = log2(class_size) - log2(8);
-            return (void*)(base_ + (2 * id * ClassSpaceSize));
-        }
-
-        void* get_class_metadata(std::size_t class_size) {
-            assert(class_size >= 8);
-            auto id = log2(class_size) - log2(8);
-            return (void*)(base_ + (2 * id * ClassSpaceSize));
-        }
-
-        void* get_class_memory(std::size_t class_size) {
-            assert(class_size >= 8);
-            auto id = log2(class_size) - log2(8);
-            return (void*)(base_ + (2 * id * ClassSpaceSize) + ClassSpaceSize);
-        }
-
-        uint64_t get_class_space_index(void* p) {
-            return ((uint64_t)p - base_) / 2 / ClassSpaceSize;
-        }
-    };
-
-    // TODO: there can be N those allocators with the same type,
-    // so need a way to get metadata indirectly
     template<std::size_t ClassSize, std::size_t Size> struct bump_allocator_metadata {
         static constexpr std::size_t Capacity = Size / ClassSize;
         static constexpr std::size_t ChunkCapacity = 64;
@@ -975,9 +931,11 @@ namespace containers {
         uint64_t pages_index_size_ = 0;
 
         bitmap<PageCount/64> pages_index_;
+
         bitmap<PageCount> pages_full_;
         bitmap<PageCount> pages_committed_;
         std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
+
         std::array<bitmap<ChunkCapacity>, ChunkCount> chunk_elements_;
 
         bump_allocator_metadata() = default;
@@ -998,6 +956,7 @@ namespace containers {
 
         void* allocate(uint64_t base, std::size_t n) {
             assert(n == 1); (void)n;
+            assert(pages_committed_.get_bit(chunk_ / PageCapacity));
 
         again:
             auto index = chunk_elements_[chunk_].ffz();
@@ -1013,6 +972,7 @@ namespace containers {
 
                 {
                     // Try chunk from same page
+                    assert(pages_committed_.get_bit(page) == 1);
                     auto chunk = page_chunks_full_[page].ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
@@ -1082,6 +1042,8 @@ namespace containers {
             auto index = get_index(p);
             auto chunk = index/ChunkCapacity;
             auto page = chunk/PageCapacity;
+            assert(pages_committed_.get_bit(page));
+
             auto element = index & (ChunkCapacity - 1);
             chunk_elements_[chunk].clear_bit(element);
             page_chunks_full_[page].clear_bit(chunk & (PageCapacity - 1));
@@ -1111,7 +1073,7 @@ namespace containers {
                     // And rest of chunks are not full
                     if (page_chunks_full_[page].get64() == 0) {
                         // And they are really free
-                        for (auto c = page * PageCapacity; c < (page + 1) / PageCapacity; ++c) {
+                        for (auto c = page * PageCapacity; c < (page + 1) * PageCapacity; ++c) {
                             if (chunk_elements_[c].get64() != 0)
                                 return;
                         }
@@ -1128,6 +1090,77 @@ namespace containers {
 
         uint64_t get_index(void* ptr) {
             return ((uint64_t)ptr & (Size - 1)) / ClassSize;
+        }
+    };
+
+
+    constexpr auto generate_class_sizes() {
+        std::array<std::size_t, 20> arr{};
+        for (std::size_t i = 0; i < arr.size(); ++i) {
+            arr[i] = 1 << (i + 3);
+        }
+        return arr;
+    }
+
+    constexpr auto class_sizes = generate_class_sizes();
+
+    template<std::size_t Size> struct bump_allocator_manager {
+        static constexpr uint64_t MinClassSize = 8;
+        static constexpr uint64_t ClassSpaceSize = Size;
+        static constexpr uint64_t MappedSize = 1ull << 44;
+
+        void* memory_ = nullptr;
+        uint64_t base_ = 0;
+
+        bump_allocator_manager() {
+            memory_ = mmap(0, MappedSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            base_ = ((uint64_t)memory_ + ClassSpaceSize - 1) & ~(ClassSpaceSize - 1);
+            __guarantee__(memory_ != MAP_FAILED, "mmap failed");
+
+            // TODO: this is here only for testing, should get rid of most templates :(
+            //generate_class_metadata(std::index_sequence_for<decltype(class_sizes)>{});
+        }
+
+        ~bump_allocator_manager() {
+            munmap(memory_, MappedSize);
+        }
+
+        template<std::size_t ClassSize> void generate_class_metadata_impl() {
+            fprintf(stderr, "generating metadata for %lu\n", ClassSize);
+            bump_allocator_metadata<ClassSize, Size>* metadata = (bump_allocator_metadata<ClassSize, Size>*)get_class_metadata(ClassSize);
+            mprotect(metadata, sizeof(*metadata), PROT_READ | PROT_WRITE);
+            new (metadata) bump_allocator_metadata<ClassSize, Size>();
+
+            // TODO: should not be needed
+            metadata->commit((uint64_t)get_class_memory(ClassSize), 0);
+        }
+
+        template<std::size_t... Is> constexpr void generate_class_metadata(std::index_sequence<Is...>) {
+            ((generate_class_metadata_impl<class_sizes[Is]>()), ...);
+        }
+
+        static std::size_t log2(std::size_t n) { return 63 - __builtin_clz(n); }
+
+        void* get_class_space(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize));
+        }
+
+        void* get_class_metadata(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize));
+        }
+
+        void* get_class_memory(std::size_t class_size) {
+            assert(class_size >= 8);
+            auto id = log2(class_size) - log2(8);
+            return (void*)(base_ + (2 * id * ClassSpaceSize) + ClassSpaceSize);
+        }
+
+        uint64_t get_class_space_index(void* p) {
+            return ((uint64_t)p - base_) / 2 / ClassSpaceSize;
         }
     };
 
