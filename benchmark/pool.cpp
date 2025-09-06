@@ -11,7 +11,7 @@
 #include <random>
 #include <unordered_set>
 
-const std::size_t N = 1ull << 28;
+const std::size_t N = 1ull << 24;
 
 /* The state must be initialized to non-zero */
 // https://en.wikipedia.org/wiki/Xorshift

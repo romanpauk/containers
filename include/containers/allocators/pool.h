@@ -941,17 +941,13 @@ namespace containers {
 
             bitmap<64> flags_;
             bitmap<PageCapacity> chunks_full_;
+            std::array<bitmap<ChunkCapacity>, PageCapacity> chunk_elements_;
         };
 
         std::array<Page, PageCount> pages_;
 
         bitmap<PageCount/64> pages_index_;
-
         bitmap<PageCount> pages_full_;
-        //bitmap<PageCount> pages_committed_;
-        //std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
-
-        std::array<bitmap<ChunkCapacity>, ChunkCount> chunk_elements_;
 
         bump_allocator_metadata() = default;
 
@@ -959,7 +955,6 @@ namespace containers {
             assert(pages_committed_.get_bit(page) == 0);
             if (mprotect((void*)(base + page * PageSize), PageSize, PROT_READ | PROT_WRITE) == -1)
                 __guarantee__(false, "commit failed\n");
-            //pages_committed_.set_bit(page);
             pages_[page].set_committed(true);
         }
 
@@ -967,26 +962,24 @@ namespace containers {
             assert(pages_committed_.get_bit(page) == 1);
             if (mprotect((void*)(base + page * PageSize), PageSize, PROT_NONE) == -1)
                 __guarantee__(false, "decommit failed\n");
-            //pages_committed_.clear_bit(page);
             pages_[page].set_committed(false);
 
         }
 
         void* allocate(uint64_t base, std::size_t n) {
             assert(n == 1); (void)n;
-            //assert(pages_committed_.get_bit(chunk_ / PageCapacity));
-            assert(pages_[chunk_ / PageCapacity].is_committed());
 
         again:
-            auto index = chunk_elements_[chunk_].ffz();
+            auto page = chunk_ / PageCapacity;
+            assert(pages_[page].is_committed());
+            auto index = pages_[page].chunk_elements_[chunk_ & (PageCapacity - 1)].ffz();
             if (__likely__(index < ChunkCapacity)) {
-                chunk_elements_[chunk_].set_bit(index);
+                pages_[page].chunk_elements_[chunk_ & (PageCapacity - 1)].set_bit(index);
                 index += chunk_ * ChunkCapacity;
                 void* p = (void*)(base + ClassSize * index);
                 assert(get_index(p) == index);
                 return p;
             } else {
-                auto page = chunk_ / PageCapacity;
                 pages_[page].chunks_full_.set_bit(chunk_ & (PageCapacity - 1));
 
                 {
@@ -1048,7 +1041,6 @@ namespace containers {
                     chunk_ = page_new * PageCapacity + pages_[page_new].chunks_full_.ffz();
 
                     if (!pages_[page_new].is_committed()) {
-                    //if (!pages_committed_.get_bit(page_new)) {
                         commit(base, page_new);
                     }
                 }
@@ -1061,15 +1053,14 @@ namespace containers {
             auto index = get_index(p);
             auto chunk = index/ChunkCapacity;
             auto page = chunk/PageCapacity;
-            //assert(pages_committed_.get_bit(page));
             assert(pages_[page].is_committed());
 
             auto element = index & (ChunkCapacity - 1);
-            chunk_elements_[chunk].clear_bit(element);
+            pages_[page].chunk_elements_[chunk & (PageCapacity - 1)].clear_bit(element);
             pages_[page].chunks_full_.clear_bit(chunk & (PageCapacity - 1));
 
             // Do not treat page as live when the chunk is quite full
-            auto free_count = _mm_popcnt_u64(~chunk_elements_[chunk].get64());
+            auto free_count = _mm_popcnt_u64(~pages_[page].chunk_elements_[chunk & (PageCapacity - 1)].get64());
             if (free_count < 64/16)
                 return;
 
@@ -1094,7 +1085,7 @@ namespace containers {
                     if (pages_[page].chunks_full_.get64() == 0) {
                         // And they are really free
                         for (auto c = page * PageCapacity; c < (page + 1) * PageCapacity; ++c) {
-                            if (chunk_elements_[c].get64() != 0)
+                            if (pages_[page].chunk_elements_[c & (PageCapacity - 1)].get64() != 0)
                                 return;
                         }
 
