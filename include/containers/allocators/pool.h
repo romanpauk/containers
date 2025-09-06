@@ -940,6 +940,7 @@ namespace containers {
             }
 
             bitmap<64> flags_;
+            bitmap<PageCapacity> chunks_full_;
         };
 
         std::array<Page, PageCount> pages_;
@@ -948,7 +949,7 @@ namespace containers {
 
         bitmap<PageCount> pages_full_;
         //bitmap<PageCount> pages_committed_;
-        std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
+        //std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
 
         std::array<bitmap<ChunkCapacity>, ChunkCount> chunk_elements_;
 
@@ -986,11 +987,11 @@ namespace containers {
                 return p;
             } else {
                 auto page = chunk_ / PageCapacity;
-                page_chunks_full_[page].set_bit(chunk_ & (PageCapacity - 1));
+                pages_[page].chunks_full_.set_bit(chunk_ & (PageCapacity - 1));
 
                 {
                     // Try chunk from same page
-                    auto chunk = page_chunks_full_[page].ffz();
+                    auto chunk = pages_[page].chunks_full_.ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
                         goto again;
@@ -1044,7 +1045,7 @@ namespace containers {
 
                     pages_index_alloc_low_ = page_new / 64;
                     pages_index_alloc_high_ = std::max(pages_index_alloc_low_, pages_index_alloc_high_);
-                    chunk_ = page_new * PageCapacity + page_chunks_full_[page_new].ffz();
+                    chunk_ = page_new * PageCapacity + pages_[page_new].chunks_full_.ffz();
 
                     if (!pages_[page_new].is_committed()) {
                     //if (!pages_committed_.get_bit(page_new)) {
@@ -1065,7 +1066,7 @@ namespace containers {
 
             auto element = index & (ChunkCapacity - 1);
             chunk_elements_[chunk].clear_bit(element);
-            page_chunks_full_[page].clear_bit(chunk & (PageCapacity - 1));
+            pages_[page].chunks_full_.clear_bit(chunk & (PageCapacity - 1));
 
             // Do not treat page as live when the chunk is quite full
             auto free_count = _mm_popcnt_u64(~chunk_elements_[chunk].get64());
@@ -1090,7 +1091,7 @@ namespace containers {
                 // If this chunk is completely free
                 if (free_count == 64) {
                     // And rest of chunks are not full
-                    if (page_chunks_full_[page].get64() == 0) {
+                    if (pages_[page].chunks_full_.get64() == 0) {
                         // And they are really free
                         for (auto c = page * PageCapacity; c < (page + 1) * PageCapacity; ++c) {
                             if (chunk_elements_[c].get64() != 0)
