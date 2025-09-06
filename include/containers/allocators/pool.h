@@ -930,10 +930,24 @@ namespace containers {
         uint64_t pages_index_free_ = -1;
         uint64_t pages_index_size_ = 0;
 
+        struct Page {
+            Page() = default;
+
+            bool is_committed() const { return flags_.get_bit(0); }
+            void set_committed(bool value) {
+                assert(is_committed() != value);
+                if (value) flags_.set_bit(0); else flags_.clear_bit(0);
+            }
+
+            bitmap<64> flags_;
+        };
+
+        std::array<Page, PageCount> pages_;
+
         bitmap<PageCount/64> pages_index_;
 
         bitmap<PageCount> pages_full_;
-        bitmap<PageCount> pages_committed_;
+        //bitmap<PageCount> pages_committed_;
         std::array<bitmap<PageCapacity>, PageCount> page_chunks_full_;
 
         std::array<bitmap<ChunkCapacity>, ChunkCount> chunk_elements_;
@@ -944,19 +958,23 @@ namespace containers {
             assert(pages_committed_.get_bit(page) == 0);
             if (mprotect((void*)(base + page * PageSize), PageSize, PROT_READ | PROT_WRITE) == -1)
                 __guarantee__(false, "commit failed\n");
-            pages_committed_.set_bit(page);
+            //pages_committed_.set_bit(page);
+            pages_[page].set_committed(true);
         }
 
         void decommit(uint64_t base, uint64_t page) {
             assert(pages_committed_.get_bit(page) == 1);
             if (mprotect((void*)(base + page * PageSize), PageSize, PROT_NONE) == -1)
                 __guarantee__(false, "decommit failed\n");
-            pages_committed_.clear_bit(page);
+            //pages_committed_.clear_bit(page);
+            pages_[page].set_committed(false);
+
         }
 
         void* allocate(uint64_t base, std::size_t n) {
             assert(n == 1); (void)n;
-            assert(pages_committed_.get_bit(chunk_ / PageCapacity));
+            //assert(pages_committed_.get_bit(chunk_ / PageCapacity));
+            assert(pages_[chunk_ / PageCapacity].is_committed());
 
         again:
             auto index = chunk_elements_[chunk_].ffz();
@@ -972,7 +990,6 @@ namespace containers {
 
                 {
                     // Try chunk from same page
-                    assert(pages_committed_.get_bit(page) == 1);
                     auto chunk = page_chunks_full_[page].ffz();
                     if (chunk < PageCapacity) {
                         chunk_ = (chunk_ / PageCapacity) * PageCapacity + chunk;
@@ -1029,7 +1046,8 @@ namespace containers {
                     pages_index_alloc_high_ = std::max(pages_index_alloc_low_, pages_index_alloc_high_);
                     chunk_ = page_new * PageCapacity + page_chunks_full_[page_new].ffz();
 
-                    if (!pages_committed_.get_bit(page_new)) {
+                    if (!pages_[page_new].is_committed()) {
+                    //if (!pages_committed_.get_bit(page_new)) {
                         commit(base, page_new);
                     }
                 }
@@ -1042,7 +1060,8 @@ namespace containers {
             auto index = get_index(p);
             auto chunk = index/ChunkCapacity;
             auto page = chunk/PageCapacity;
-            assert(pages_committed_.get_bit(page));
+            //assert(pages_committed_.get_bit(page));
+            assert(pages_[page].is_committed());
 
             auto element = index & (ChunkCapacity - 1);
             chunk_elements_[chunk].clear_bit(element);
